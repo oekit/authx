@@ -25,4 +25,8 @@
 // 三件套咬合（#119/#120/#121）：本包消费 #119 状态面（authz.Revoker /
 // SessionRegistry），#121 的改密吊销钩子（RevokeUser）落到 #119 的用户级
 // 撤销黑名单 + 全会话强踢；陈旧判定口径单点在 pwd.TokenStaleBefore。
+//
+// 存储形态可替换（#196）：NewFlow 的 sessions 参数接受任意 SessionRegistry
+// 实现——单实例用 authz.MemRegistry，多实例用 authz.NewStoreRegistry 装配
+// 下游 SessionStore（Redis 等），登录/轮换/登出/强踢编排零改动。
 package auth

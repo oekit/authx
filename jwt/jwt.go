@@ -12,8 +12,14 @@
 //
 // 硬契约（与既有消费方互通，不可改）：
 //   - RS256 形态 alg 恰为 RS256；HS256 形态 alg 恰为 HS256
-//   - JWT header 只含 {"alg":"<alg>"}，不带 typ
+//   - JWT header 缺省只含 {"alg":"<alg>"}，不带 typ；WithKeyID 显式追加 kid
+//     （header 收窄为 alg(+kid)）。OIDC id_token 场景必须设置 kid：JWKS 端点
+//     可能发布多把密钥，客户端只能靠 header 的 kid 选钥验签
 //   - 业务自定义声明平铺进 payload，解析时收集进 Claims.Extra
+//
+// 多钥轮换解析：Claims.Header 始终是解析令牌的 header 快照（含 kid）；需要
+// 按 kid 选钥时用 WithKeyIDResolver（RS256）/ WithSymmetricKeyIDResolver
+// （HS256）注入回调，无需调用方自拆 JWT 三段。
 package jwt
 
 import (
@@ -32,8 +38,22 @@ var ErrInvalidToken = errors.New("jwt: invalid token")
 // Claims 是签发与解析的载荷容器。
 type Claims struct {
 	gojwt.RegisteredClaims
+	// Header 是解析令牌的 JWT header 快照（缺省含 alg，WithKeyID 签发时含 kid）。
+	// 签发侧产出不经 Claims，本字段只由 Parse/ParseSymmetric/Manager.ParseTyped
+	// 填充；每次解析返回独立副本，改写不影响其它解析结果。
+	Header map[string]any
 	// Extra 承载业务自定义声明（签发时经 WithClaim 平铺进 payload，解析时收集回来）。
 	Extra map[string]any
+}
+
+// KeyID 返回解析令牌 header 的 kid（缺失或非字符串返回空串）。OIDC/JWKS 多钥
+// 场景与 WithKeyIDResolver 同源，便于调用方在验签后读回本次选中的密钥 ID。
+func (c *Claims) KeyID() string {
+	if c == nil || c.Header == nil {
+		return ""
+	}
+	kid, _ := c.Header["kid"].(string)
+	return kid
 }
 
 // signOptions 是签发选项的内部表示。
@@ -41,6 +61,7 @@ type signOptions struct {
 	issuer    string
 	subject   string
 	jti       string
+	keyID     string
 	audience  []string
 	ttl       time.Duration
 	noExpiry  bool
@@ -85,6 +106,14 @@ func WithAudienceClaims(aud ...string) SignOption {
 
 // WithJTI 设置 jti（令牌 ID）。
 func WithJTI(jti string) SignOption { return func(o *signOptions) { o.jti = jti } }
+
+// WithKeyID 设置 JWT header 的 kid（密钥 ID，#195）：header 从「只含 alg」
+// 窄契约扩展为 alg(+kid)，仍不带 typ；kid 不参与签名内容，无安全面变化。
+//
+// OIDC id_token / JWKS 多密钥场景必须设置 kid——客户端按 header 的 kid 从
+// JWKS 选择验签公钥。空串表示不写 kid（显式回退默认值，header 维持只含
+// alg）；RS256 与 HS256（SymmetricSigner.Sign）共用同一 SignOption 面。
+func WithKeyID(kid string) SignOption { return func(o *signOptions) { o.keyID = kid } }
 
 // WithTTL 设置 exp = iat + ttl。d 为 0 直接 panic（#65）：显式 0 与「未设置」
 // 不可区分，而最可能的成因是「配置缺失的零值透传」——静默接受等于放行一批
@@ -158,18 +187,19 @@ func Sign(kp *KeyPair, opts ...SignOption) (string, error) {
 	if kp == nil || kp.Private == nil {
 		return "", fmt.Errorf("%w: 缺少私钥", ErrInvalidToken)
 	}
-	payload, err := signPayload(opts)
+	payload, header, err := signParts("RS256", opts)
 	if err != nil {
 		return "", err
 	}
 	tok := gojwt.NewWithClaims(gojwt.SigningMethodRS256, gojwt.MapClaims(payload))
-	tok.Header = map[string]any{"alg": "RS256"} // 硬契约：header 只含 alg
+	tok.Header = header
 	return tok.SignedString(kp.Private)
 }
 
-// signPayload 应用签发选项并组装 payload（#86：RS256/HS256 两形态共用同一份签发
-// 语义——缺省 ttl=24h、iat/exp 同钟源派生、注册声明注入面防护 #71）。
-func signPayload(opts []SignOption) (map[string]any, error) {
+// signParts 应用签发选项并组装 payload 与 header（#86：RS256/HS256 两形态共用
+// 同一份签发语义——缺省 ttl=24h、iat/exp 同钟源派生、注册声明注入面防护 #71；
+// #195 header 缺省只含 alg，WithKeyID 显式追加 kid）。
+func signParts(alg string, opts []SignOption) (map[string]any, map[string]any, error) {
 	o := &signOptions{ttl: 24 * time.Hour, claims: map[string]any{}, nowFn: time.Now}
 	for _, opt := range opts {
 		opt(o)
@@ -178,7 +208,7 @@ func signPayload(opts []SignOption) (map[string]any, error) {
 	// 无条件覆盖，注入保留键 = 顶掉 exp/iss/iat 等的既定值（#97 起 token_type
 	// 同样保留——伪造分型即分型混淆注入面）。
 	if hits := reservedClaimHits(o.claims); len(hits) > 0 {
-		return nil, fmt.Errorf("%w: WithClaim 不能注入保留声明 %v（#71）——这是令牌声明注入面；注册声明请用 WithIssuer/WithSubject/WithAudienceClaims/WithJTI/WithNotBefore 设置，exp/iat 由 WithTTL 与签发时钟派生，token_type 由 Manager 盖章（#97）", ErrInvalidToken, hits)
+		return nil, nil, fmt.Errorf("%w: WithClaim 不能注入保留声明 %v（#71）——这是令牌声明注入面；注册声明请用 WithIssuer/WithSubject/WithAudienceClaims/WithJTI/WithNotBefore 设置，exp/iat 由 WithTTL 与签发时钟派生，token_type 由 Manager 盖章（#97）", ErrInvalidToken, hits)
 	}
 	now := o.nowFn()
 	payload := map[string]any{}
@@ -217,7 +247,13 @@ func signPayload(opts []SignOption) (map[string]any, error) {
 		// plain Sign（tokenType 为空）保持不带该声明，payload 向后兼容。
 		payload["token_type"] = o.tokenType
 	}
-	return payload, nil
+	// header 窄契约（#195）：无 kid 时仍是单键 map（字节零变化）；有 kid 时
+	// 恰追加一个 kid 字段，仍不带 typ。
+	header := map[string]any{"alg": alg}
+	if o.keyID != "" {
+		header["kid"] = o.keyID
+	}
+	return payload, header, nil
 }
 
 // defaultLeeway 是解析校验缺省的时钟偏移容忍（#137）：多实例部署下各实例
@@ -234,6 +270,8 @@ type parseOptions struct {
 	audience      []string
 	issuer        string
 	allowNoExpiry bool
+	rsaKeyByID    func(kid string) (*rsa.PublicKey, error)
+	symKeyByID    func(kid string) ([]byte, error)
 }
 
 // ParseOption 是 Parse 的函数选项。
@@ -273,6 +311,26 @@ func WithExpectedIssuer(expected string) ParseOption {
 	return func(o *parseOptions) { o.issuer = expected }
 }
 
+// WithKeyIDResolver 设置 RS256 按 header kid 选公钥的回调（#195）：多钥轮换/
+// JWKS 场景下调用方不再需要自拆 token 取 kid，公钥选择与验签在同一解析调用中
+// 完成。配置后 Parse 的 pub 参数可为 nil（resolver 优先于静态公钥）；header 缺
+// kid、kid 非字符串/空串、回调返回 (nil, nil) 或 error 一律 fail-closed（错误
+// 链保留回调原因，外层仍可 errors.Is(ErrInvalidToken)）。
+//
+// 未配置本选项时行为与既有 Parse 完全一致（pub 必填、header 不参与选钥）；
+// 解析成功后 header 快照在 Claims.Header，kid 可经 Claims.KeyID 读取。
+func WithKeyIDResolver(resolve func(kid string) (*rsa.PublicKey, error)) ParseOption {
+	return func(o *parseOptions) { o.rsaKeyByID = resolve }
+}
+
+// WithSymmetricKeyIDResolver 设置 HS256 按 header kid 选共享密钥的回调（#195
+// 的 HS256 对偶）：配置后 ParseSymmetric 的 secret 参数可为 nil（resolver 优先），
+// 密钥环中每把密钥仍须满足 ≥32 字节（RFC 7518 §3.2）；回调返回的密钥过弱时
+// 解析拒绝（与 NewSymmetric 同一判据）。其余 fail-closed 语义同 WithKeyIDResolver。
+func WithSymmetricKeyIDResolver(resolve func(kid string) ([]byte, error)) ParseOption {
+	return func(o *parseOptions) { o.symKeyByID = resolve }
+}
+
 // Parse 校验并解析令牌（RS256-only，不校验 aud/iss）。对称形态（HS256 共享
 // 密钥）见 ParseSymmetric（#86）——两入口共享校验语义。
 //
@@ -294,14 +352,31 @@ func WithExpectedIssuer(expected string) ParseOption {
 // （golang-jwt 上游 MapClaims.GetSubject 对类型异常同样返回错误）；声明缺失
 // 维持零值不报错（exp 除外，见上）——缺失声明的令牌按消费方自身的校验责任走。
 func Parse(token string, pub *rsa.PublicKey, opts ...ParseOption) (*Claims, error) {
-	if pub == nil {
-		return nil, fmt.Errorf("%w: 缺少公钥", ErrInvalidToken)
-	}
 	o := &parseOptions{leeway: defaultLeeway}
 	for _, opt := range opts {
 		opt(o)
 	}
+	if o.symKeyByID != nil {
+		return nil, fmt.Errorf("%w: WithSymmetricKeyIDResolver 只适用于 HS256 入口 ParseSymmetric（RS256 请用 WithKeyIDResolver）", ErrInvalidToken)
+	}
+	if pub == nil && o.rsaKeyByID == nil {
+		return nil, fmt.Errorf("%w: 缺少公钥", ErrInvalidToken)
+	}
 	tok, err := newParser(o, "RS256").Parse(token, func(t *gojwt.Token) (any, error) {
+		if o.rsaKeyByID != nil {
+			kid, err := headerKeyID(t.Header)
+			if err != nil {
+				return nil, err
+			}
+			key, err := o.rsaKeyByID(kid)
+			if err != nil {
+				return nil, fmt.Errorf("按 kid %q 选公钥: %w", kid, err)
+			}
+			if key == nil {
+				return nil, fmt.Errorf("按 kid %q 选公钥返回 nil", kid)
+			}
+			return key, nil
+		}
 		return pub, nil
 	})
 	if err != nil {
@@ -311,11 +386,7 @@ func Parse(token string, pub *rsa.PublicKey, opts ...ParseOption) (*Claims, erro
 		// 把链拍平成纯文本，两类令牌不可区分。
 		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
-	mc, ok := tok.Claims.(gojwt.MapClaims)
-	if !ok {
-		return nil, fmt.Errorf("%w: 载荷类型异常", ErrInvalidToken)
-	}
-	return claimsFromMap(mc)
+	return claimsFromToken(tok)
 }
 
 // newParser 构造解析器（#86：入口绑定算法——单算法 WithValidMethods 白名单，
@@ -336,6 +407,47 @@ func newParser(o *parseOptions, alg string) *gojwt.Parser {
 		parserOpts = append(parserOpts, gojwt.WithIssuer(o.issuer))
 	}
 	return gojwt.NewParser(parserOpts...)
+}
+
+// claimsFromToken 把解析产物收进 Claims：载荷交给 claimsFromMap，header 快照
+// 收进 Claims.Header（#195：kid/alg 等 header 字段解析后可直接读取）。
+func claimsFromToken(tok *gojwt.Token) (*Claims, error) {
+	mc, ok := tok.Claims.(gojwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("%w: 载荷类型异常", ErrInvalidToken)
+	}
+	out, err := claimsFromMap(mc)
+	if err != nil {
+		return nil, err
+	}
+	out.Header = cloneHeader(tok.Header)
+	return out, nil
+}
+
+// cloneHeader 拷贝 header 快照（每次解析独立，调用方改写不影响其它结果）。
+func cloneHeader(h map[string]any) map[string]any {
+	if h == nil {
+		return nil
+	}
+	out := make(map[string]any, len(h))
+	for k, v := range h {
+		out[k] = v
+	}
+	return out
+}
+
+// headerKeyID 取 header 的 kid 并 fail-closed 校验（#195 resolver 选钥前置：
+// 缺失/空串/非字符串都拒绝——静默回落某把默认密钥会让多钥轮换失去意义）。
+func headerKeyID(header map[string]any) (string, error) {
+	v, ok := header["kid"]
+	if !ok {
+		return "", fmt.Errorf("header 缺少 kid，无法按密钥 ID 选钥")
+	}
+	kid, ok := v.(string)
+	if !ok || kid == "" {
+		return "", fmt.Errorf("header kid 类型异常或为空: %T", v)
+	}
+	return kid, nil
 }
 
 // claimsFromMap 把 MapClaims 收进 Claims（#86：RS256/HS256 两入口共享同一份

@@ -28,15 +28,20 @@ go get github.com/oekit/kitx@v0.9.4
   `middleware.Fail` 自动映射 HTTP 400）
 - `jwt` —— JWT 签发与校验，RS256（非对称密钥对）与 HS256（对称共享密钥）两种
   主流形态共享同一套 SignOption/ParseOption/Claims 与校验语义，每入口固定算法
-  白名单关死 alg 混淆：header 只含 `{"alg":"..."}` 不带 typ（与 Nimbus/既有消费
-  方互通）、业务声明经 `WithClaim` 平铺 / `Claims.Extra` 收集、PEM 密钥对
-  （PKCS#1/PKCS#8 私钥，PKIX/PKCS#1/X.509 证书公钥）、HS256 secret ≥32 字节
-  构造期 fail-fast（RFC 7518 §3.2）
+  白名单关死 alg 混淆：header 缺省只含 `{"alg":"..."}` 不带 typ（与 Nimbus/既有
+  消费方互通），`WithKeyID` 显式追加 kid（OIDC id_token/JWKS 多钥场景必需）、
+  解析侧 `Claims.Header`/`Claims.KeyID` + `WithKeyIDResolver`/
+  `WithSymmetricKeyIDResolver` 支持按 kid 多钥轮换、业务声明经 `WithClaim`
+  平铺 / `Claims.Extra` 收集、PEM 密钥对（PKCS#1/PKCS#8 私钥，PKIX/PKCS#1/
+  X.509 证书公钥）、HS256 secret ≥32 字节构造期 fail-fast（RFC 7518 §3.2）
 - `authz` —— 双 token **状态面**：`TokenHash`（sha256hex，键空间唯一产出口）+
   撤销黑名单（token 级 / 用户级截断，`Revoker` 接口化存储 + `MemRevoker` 内存
   实现）+ 在线会话注册表（设备/会话维度 `Session`，Register / ListByUser /
-  Kick 双 hash 拉黑+删键的原子认领 / KickUser 强踢全会话，`MemRegistry` 内存
-  实现）——与 `jwt` 校验面组合消费
+  Kick 双 hash 拉黑+删键的原子认领 / KickUser 强踢全会话）；`SessionStore`
+  8 方法小接口 + `StoreRegistry` 编排层（#196：下游 Redis 适配器约 10 行即可
+  替换 `MemRegistry`，不必重写索引语义）+ `MemRegistry`/`MemSessionStore`
+  内存实现 + `authz/authztest` 契约测试套件（下游 store 实现跑同一组用例）
+  ——与 `jwt` 校验面组合消费
 - `auth` —— 认证流**编排**：`Flow.IssuePair` 签发尾段（签发+会话登记一次落地）、
   `Flow.RotateRefresh` refresh 轮换+防重放（旧 refresh 单次使用，旧令牌二次
   使用恒 `ErrReplayed`）、`Flow.Logout` 登出双 token 撤销、`Flow.ParseAccess`
@@ -54,10 +59,10 @@ go get github.com/oekit/kitx@v0.9.4
 | 包 | import 路径 | 做什么 |
 |---|---|---|
 | `hash` | `github.com/oekit/kitx/hash` | `Md5Hex(s)`（32 位小写 hex）/ `Md5Bytes(b)`（16 字节）——非密码学场景专用（缓存键/幂等键/短唯一 code），输出格式稳定承诺永不更换；密码学摘要用 pkg/encoding Sha256Hex |
-| `jwt` | `github.com/oekit/kitx/jwt` | RS256：`Sign(kp, opts...)` / `Parse(token, pub, opts...)`；HS256 对称共享密钥（#86）：`NewSymmetric(secret)`（≥32 字节构造期 fail-fast）/ `SymmetricSigner.Sign(opts...)` / `ParseSymmetric(token, secret, opts...)`——两形态共享 `WithIssuer/Subject/JTI/TTL/NoExpiry/NotBefore/Claim` 签发选项与 `WithLeeway/WithAudience` 解析选项，header 只含 alg 不带 typ，入口绑定算法（RS256 入口只认 RS256、HS256 入口只认 HS256）关死 alg 混淆；claims 经 `Extra` 平铺收集；`KeyPair`/`GenerateKeyPair`/`MarshalKeyPairPEM`/`ParsePrivateKey`/`ParsePublicKey`（含 X.509 证书公钥） |
+| `jwt` | `github.com/oekit/kitx/jwt` | RS256：`Sign(kp, opts...)` / `Parse(token, pub, opts...)`；HS256 对称共享密钥（#86）：`NewSymmetric(secret)`（≥32 字节构造期 fail-fast）/ `SymmetricSigner.Sign(opts...)` / `ParseSymmetric(token, secret, opts...)`——两形态共享 `WithIssuer/Subject/JTI/KeyID/TTL/NoExpiry/NotBefore/Claim` 签发选项与 `WithLeeway/WithAudience/WithExpectedIssuer/WithKeyIDResolver/WithSymmetricKeyIDResolver` 解析选项，header 缺省只含 alg 不带 typ、`WithKeyID` 追加 kid（OIDC id_token/JWKS 必需），入口绑定算法（RS256 入口只认 RS256、HS256 入口只认 HS256）关死 alg 混淆；解析产物 `Claims.Header`/`Claims.KeyID` 暴露 header 快照，claims 经 `Extra` 平铺收集；`KeyPair`/`GenerateKeyPair`/`MarshalKeyPairPEM`/`ParsePrivateKey`/`ParsePublicKey`（含 X.509 证书公钥） |
 | `uidgen` | `github.com/oekit/kitx/uidgen` | `InitSnowflake(machineID)` / `SnowflakeID()`（不返错，auto-init 兜底）+ `ExtractSnowflake*` 元数据；`UUID`/`ShortUUID`/`UUIDToUpper`/`ShortUUIDToUpper`/`UUIDWithHyphen`（手写 v4，零第三方）；`ULID()`/`ULIDFromTime(t)`/`ParseULID(s)`（26 字符 ULID，Crockford Base32，字典序 = 时间序，同毫秒严格递增，与 oklog/ulid 位兼容）；`RandomHex(n)` / `RandomString(alphabet, n)`（crypto/rand，拒绝采样；RandomString 按 rune 采样产合法 UTF-8，非法入参 panic——n<=0、空 alphabet、alphabet>256 字符）+ `RandomHexE`/`RandomStringE` error 返回变体（入参防呆不变，rand 读取失败返 error）+ `RandomHexFrom`/`RandomStringFrom(io.Reader)` 显式随机源变体（nil reader panic，io.ReadFull 短读循环读满） |
 | `validator` | `github.com/oekit/kitx/validator` | `Validate(obj)` / `ValidateVar(field, tag)` / `ValidateVarNamed(field, fieldName, tag)`（struct tag；单变量校验用 Named 变体带字段名，`ValidateVar` 的字段名退化为兜底主语 "value"）；`RegisterValidation`（⚠️ 仅限 init 阶段，底层注册非并发安全）；`ValidationError.Errors()/Map()/Len()` 结构化字段错误；`SetDefault`/`Default` 可替换实现（atomic.Pointer 并发安全） |
-| `authz` | `github.com/oekit/kitx/authz` | `TokenHash(token)`（sha256hex，黑名单/会话键空间唯一产出口）；`Revoker`（Revoke/Revoked/RevokeUser/RevokedUser——token 级 + 用户级截断）+ `MemRevoker`；`Session`/`SessionRegistry`（`Register(ctx, s, ttl)` TTL=refresh 剩余寿命 / `GetByRefreshHash` 轮换认领键 / `ListByUser` 管理端枚举 / `Kick(id)` 双 hash 拉黑+删键的**原子认领**（三态返回）/ `KickUser` 强踢全会话）+ `MemRegistry`（构造注入 Revoker）；`RevokeToken`/`RevokedToken` 原始令牌助手；无后台 goroutine，过期惰性出清 + `Sweep` |
+| `authz` | `github.com/oekit/kitx/authz` | `TokenHash(token)`（sha256hex，黑名单/会话键空间唯一产出口）；`Revoker`（Revoke/Revoked/RevokeUser/RevokedUser——token 级 + 用户级截断）+ `MemRevoker`；`Session`/`SessionRegistry`（`Register(ctx, s, ttl)` TTL=refresh 剩余寿命 / `GetByRefreshHash` 轮换认领键 / `ListByUser` 管理端枚举 / `Kick(id)` 双 hash 拉黑+删键的**原子认领**（三态返回）/ `KickUser` 强踢全会话）；#196 存储适配层：`SessionStore`（Get/SetNX/Del/SAdd/SRem/SMembers/Expire/TTL 8 方法，原子性与 TTL 语义见接口注释）+ `StoreRegistry` 编排实现（`WithStorePrefix`，键布局/操作锁文档化）+ `MemSessionStore`/`MemRegistry` 内存实现 + `authz/authztest` 契约测试套件（`authztest.Run` 下游 store 同组用例）；`RevokeToken`/`RevokedToken` 原始令牌助手；无后台 goroutine，过期惰性出清 + `Sweep` |
 | `auth` | `github.com/oekit/kitx/auth` | `NewFlow(m, sessions, revoker, WithTTL/WithRolesClaim/WithClock/WithSignOptions/WithParseOptions)`；`Flow.IssuePair(ctx, u, meta)` 签发尾段（签发+会话登记一次落地）；`Flow.RotateRefresh(ctx, repo, refresh, meta)` 轮换+防重放（先原子认领后签发，旧 refresh 单次使用，败方 `ErrReplayed`）；`Flow.Logout(ctx, access, refresh)` 双 token 撤销；`Flow.ParseAccess(ctx, access)` 资源侧消费面（分型校验+双层撤销判定）；`RevokeUser`/`Flow.RevokeUser` 改密吊销钩子（用户级截断+全会话强踢）；`IsRevoked` 组合判定；`UserRepo`（GetByID 错误分型 401/500、TouchLogin 尽力而为）；哨兵 `ErrUnauthorized`（BizError 401）/`ErrReplayed`/`ErrUserNotFound` |
 | `pwd` | `github.com/oekit/kitx/pwd` | `Policy{MinLength,MaxLength,RequireUpper/Lower/Digit/Special}.Check`（长度 rune 口径 + 复杂度 + 常见弱口令拒绝面：内嵌表/leet 归一/弱核心子串/结构性弱模式）；`CheckMinLength(pwd, min, msgFormat)`；`HistoryCheck{Count,Fetch,Match}.Check` 历史防复用（**fail-closed**，比对器注入不绑 bcrypt）；`ApplyExpiryOnLogin(ctx, days, mustChange, changedAt, persist)` 登录期过期轮换判定；`TokenStaleBefore(iat, changedAt)` 秒截断陈旧比较；违规 `Violation`（Kind 分类，Unwrap BizError 400） |
 

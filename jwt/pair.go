@@ -187,15 +187,21 @@ func (m *Manager) Refresh(refreshToken string, ttlAccess, ttlRefresh time.Durati
 	if err != nil {
 		return "", "", err
 	}
-	// 继承会话上下文：iss/sub/aud/业务声明。token_type 分型由 issueTyped 重新
-	// 盖章，不随 Extra 继承。jti 一律重新生成——轮换不得复用旧 jti（钩子正是
+	// 继承会话上下文：iss/sub/aud/kid/业务声明。token_type 分型由 issueTyped
+	// 重新盖章，不随 Extra 继承。jti 一律重新生成——轮换不得复用旧 jti（钩子正是
 	// 按旧 jti 吊销，复用等于吊销新令牌）。aud 随身份走（#117）：多受众部署的
 	// WithAudience（#66）fail-closed 校验会把丢 aud 的新令牌全部拒掉，轮换即
 	// 断流。nbf 不随轮换继承——exp/iat 既已按轮换时刻重新计算，生效窗口整体
 	// 重开，新令牌自签发时刻起生效。
-	base := make([]SignOption, 0, len(old.Extra)+3)
+	base := make([]SignOption, 0, len(old.Extra)+4)
 	if old.Issuer != "" {
 		base = append(base, WithIssuer(old.Issuer))
+	}
+	// header kid 随密钥身份走（#195）：同一 Manager 的签名密钥未变，轮换出的
+	// 新令牌必须继续带 kid，否则 JWKS 多钥消费方会丢失选钥依据。旧令牌无 kid
+	// 时零参与（WithKeyID("") 同效），不会给无 kid 形态引入字节变化。
+	if kid := old.KeyID(); kid != "" {
+		base = append(base, WithKeyID(kid))
 	}
 	// aud 继承前过滤空串（#148）：old.Audience 是运行期从令牌解出的内容，不是
 	// 调用方配置——WithAudienceClaims 是构造期 fail-fast（空受众 panic，#117），
