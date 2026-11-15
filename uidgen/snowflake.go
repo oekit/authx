@@ -2,6 +2,7 @@ package uidgen
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -32,6 +33,7 @@ const (
 // snowflakeEpoch 是 Snowflake ID 使用的 epoch 起点（毫秒）.
 // 2025-01-01 00:00:00 UTC（1735689600000）。改常量会破坏存量 ID 的
 // ExtractSnowflakeTime 解析，只能改注释对齐事实；距溢出余量约 68 年.
+// 系统时钟早于本值时拒绝发号（next() fail-fast panic，#189）。
 const snowflakeEpoch int64 = 1735689600000
 
 // defaultClockBackTolerance 是缺省的时钟回拨容忍上限（#72）：回拨不超过它时
@@ -163,6 +165,12 @@ func InitSnowflakeFromEnv() error {
 // 回拨）转进位生成——以回拨前基准继续发号，不再阻塞，ID 时间戳领先真实
 // 时钟直到追平（ExtractSnowflakeTime 读到的是合成时刻）。大幅回拨可用
 // WithOnClockBack 注册回调接告警.
+//
+// 时钟必须晚于 snowflakeEpoch（2025-01-01 UTC），否则拒绝发号（#189）：
+// 首枚起即为负 ID（违反位布局 sign 恒 0 的承诺），冷启动未同步 NTP/RTC
+// 掉电/人为调时到 epoch 之前时 next() 当场 panic（先校准系统时钟）；同理
+// 时钟超出 41 位毫秒窗口（约 2094 年）时溢出为负同样 panic，不静默产出
+// 坏 ID。
 func SnowflakeID() int64 {
 	s := defaultSnowflake.Load()
 	if s == nil {
@@ -236,14 +244,37 @@ func (s *Snowflake) next() int64 {
 				}
 				continue
 			}
-			return (now-s.epoch)<<timestampShift | (s.machineID << workerShift) | s.sequence
+			return s.makeID(now, s.sequence)
 		}
 
 		// now > last：新 ms
+		// 时钟早于 epoch（#189）：冷启动未同步 NTP、RTC 掉电重置、人为调时
+		// 到 2025-01-01 之前时 now-s.epoch 为负，首枚起就是负 ID——在改写
+		// lastTS 之前 fail-fast：既不产出坏 ID，也不把进位基准污染成
+		// pre-epoch 时刻。常规时钟回拨（now < lastTS）不经过这里：走 #72 的
+		// 容忍等待/进位生成，lastTS 恒 ≥ epoch。
+		if now < s.epoch {
+			panic(fmt.Sprintf("uidgen: 系统时钟早于 snowflakeEpoch（%d，2025-01-01 UTC），now=%d——拒绝发号，先校准系统时钟（#189）", s.epoch, now))
+		}
 		s.lastTS = now
 		s.sequence = 0
-		return (now-s.epoch)<<timestampShift | (s.machineID << workerShift) | s.sequence
+		return s.makeID(now, s.sequence)
 	}
+}
+
+// makeID 组装位布局并守住符号位承诺（#189）：位布局声明
+// [1 sign | 41 ts | 10 machine | 12 sequence] 的 sign 恒 0——now 早于 epoch
+// 或超出 41 位毫秒窗口（约 2094 年）时左移会吃掉 bit63 产出负 ID，而负 ID
+// 的下游方向全是静默出错：ExtractSnowflakeTime 解出错误时间、转 uint64 变
+// 补码大数、按正数主键假设的 base32/base58 编码结果完全不同。与
+// ULIDFromTime 对超范围时间戳 panic 同口径（非法状态当场暴露好过静默产出
+// 坏 ID，#50 纪律）：id < 0 当场 panic 拒绝发号。
+func (s *Snowflake) makeID(now, seq int64) int64 {
+	id := (now-s.epoch)<<timestampShift | (s.machineID << workerShift) | seq
+	if id < 0 {
+		panic(fmt.Sprintf("uidgen: snowflake ID 溢出为负（now=%d, epoch=%d）——时钟必须晚于 snowflakeEpoch(2025-01-01) 且未超出 41 位毫秒窗口（约 2094 年），拒绝发号（#189）", now, s.epoch))
+	}
+	return id
 }
 
 // notifyClockBack 通报一次超限时钟回拨（#72）：优先用 WithOnClockBack 注册的

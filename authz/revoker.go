@@ -55,6 +55,9 @@ type Revoker interface {
 	// Revoked 判定单枚令牌是否已吊销（token 级）。
 	Revoked(ctx context.Context, hash string) (bool, error)
 	// RevokeUser 用户级吊销：at 之前签发的该用户令牌全部判陈旧（截断点单调不回退）。
+	// at 不得为零值：零值截断点会让判定恒 false（一枚令牌都没吊销却返回 nil
+	// ——fail-open），非正/零值是配置零值透传的常见形态，实现出口必须
+	// fail-fast（与 Revoke 的 remaining 同款 #65 纪律，#188）。
 	RevokeUser(ctx context.Context, userID string, at time.Time) error
 	// RevokedUser 用户级判定：iat 早于截断点（秒截断，pwd.TokenStaleBefore
 	// 口径）即陈旧。无截断点 ⇒ false。
@@ -148,12 +151,22 @@ func (m *MemRevoker) Revoked(ctx context.Context, hash string) (bool, error) {
 
 // RevokeUser 设置用户级截断点（单调不回退，取既有值与 at 的较大者——回退
 // 会让已判陈旧的令牌复活）。
+//
+// 零值 fail-fast（#188）：at.IsZero（DB NULL/零值扫描、或调用方误传
+// time.Time{} 想「吊销全部」）时直接报错，不登记——零值截断点存进去后
+// RevokedUser 的判定恒 false（任何真实 iat 都不 Before 零时刻），改密/强踢
+// 静默零效果且接口返回 nil 表示「成功」，正是 Revoke 对非正 remaining
+// 已经 fail-fast 的同款风险（#65 纪律）。确需「撤销一切历史」的语义请用
+// 显式截断点（如 time.Now()），不要让零值承担含义。
 func (m *MemRevoker) RevokeUser(ctx context.Context, userID string, at time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if userID == "" {
 		return fmt.Errorf("authz: RevokeUser 的 userID 不能为空")
+	}
+	if at.IsZero() {
+		return fmt.Errorf("authz: RevokeUser 的 at 不能是零值——零值截断点判定恒 false，等于一枚令牌都没吊销（#65 同款零值透传纪律）")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

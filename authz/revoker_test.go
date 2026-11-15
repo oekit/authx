@@ -243,3 +243,42 @@ func TestMemRevokerClockOptionPanics(t *testing.T) {
 	}()
 	_ = NewMemRevoker(WithRevokerClock(nil))
 }
+
+// 零值 at fail-fast（#188）：与 Revoke 对非正 remaining 的 #65 纪律同款。
+// 零值截断点（DB NULL/零值扫描、或误传 time.Time{} 想「吊销全部」）登记后
+// 判定恒 false——一枚令牌都没吊销却返回 nil 表示「成功」，fail-open 是
+// 黑名单最危险的缺省；必须在入口拒绝且不留状态。
+func TestMemRevokerRevokeUserRejectsZeroAt(t *testing.T) {
+	ctx := context.Background()
+	r := NewMemRevoker()
+
+	err := r.RevokeUser(ctx, "u1", time.Time{})
+	if err == nil {
+		t.Fatal("零值 at 必须报错——零值截断点判定恒 false，等于零效果且无信号（#188）")
+	}
+	if !strings.Contains(err.Error(), "零值") {
+		t.Errorf("错误文案应点明零值风险, got %s", err)
+	}
+	// 拒绝后不留截断点：此后判定仍是「无截断点 ⇒ false」。
+	if revoked, err := r.RevokedUser(ctx, "u1", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil || revoked {
+		t.Fatalf("零值 at 被拒后 RevokedUser = (%v, %v), want (false, nil)", revoked, err)
+	}
+	// 正常路径不受影响。
+	base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	if err := r.RevokeUser(ctx, "u1", base); err != nil {
+		t.Fatalf("正常 at 应成功, got %v", err)
+	}
+	if revoked, _ := r.RevokedUser(ctx, "u1", base.Add(-time.Second)); !revoked {
+		t.Fatal("正常截断点应照常生效")
+	}
+
+	// 纵深：即便零值截断点被旁路写进表，RevokedUser 也绝不返回 true——
+	// 判定口径（pwd.TokenStaleBefore）下任何真实 iat 都不 Before(零时刻)，
+	// 这正是「静默零效果」的 fail-open 面，必须钉死为 false。
+	r.mu.Lock()
+	r.users["u2"] = time.Time{}
+	r.mu.Unlock()
+	if revoked, err := r.RevokedUser(ctx, "u2", base); err != nil || revoked {
+		t.Fatalf("零值截断点的判定 = (%v, %v), want (false, nil)——不得 fail-open", revoked, err)
+	}
+}
