@@ -1,3 +1,11 @@
+## [v0.9.4] — 2026-11-15
+
+- RevokeUser 拒绝零值 at fail-fast（#188）：MemRevoker.RevokeUser 对 at.IsZero() 报错不留状态，与 Revoke 非正 remaining 同纪律，Revoker 接口文档同步契约
+- snowflake 时钟早于 epoch 拒发（#189）：next() 改写 lastTS 前校验 now < epoch 即 panic，另加 makeID 结果侧 id<0 兜底（2094 年窗口溢出），godoc 补「时钟必须晚于 epoch」
+- uidgen 随机源无进展快速失败（#190）：sampleRunes 连续 64 轮读满缓冲零产出返回 errSampleStalled，恒 0xFF 注入源不再死循环
+
+关联问题单：kitx#188、kitx#189、kitx#190。
+
 ## [v0.9.3] — 2026-11-13
 
 - jwt/uidgen/pwd/validator 批：HS256 哨兵与 %w（#139）、weakReason 归一化缓存（#140）、ULID E 变体（#141）、uidgen 改 logx（#145）、弱核心子串双侧归一（#146）、HS256 secret 拷贝（#147）、Refresh aud 空串过滤（#148）、exp=0 对齐上游（#149）、SetDefault typed-nil 守卫（#150）、issueTail 失败回收令牌（#154）、auth 新单修复（#159）
