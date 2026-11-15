@@ -11,8 +11,21 @@
 //     由此派生，跨服务不再各写一份；
 //   - Revoker / SessionRegistry 接口化存储面（#119 建议形态）：内存实现
 //     MemRevoker / MemRegistry 随包交付（单实例进程内部署与测试替身双用），
-//     Redis 等持久实现由下游按同一契约落地（键前缀可配、TTL=refresh 剩余
-//     寿命的约定写在各方法契约里）。
+//     Redis 等持久实现由下游按同一契约落地。
+//
+// #196 存储适配层：多实例下游不必再重写 400 行 Redis 会话索引——
+//
+//   - SessionStore 是编排层依赖的最小存储面（Get/SetNX/Del/SAdd/SRem/SMembers/
+//     Expire/TTL，各方法语义与原子性/TTL 要求写在接口注释里）；下游把 Redis
+//     包成 10 来行适配器即可；
+//   - StoreRegistry 是基于 SessionStore 的编排实现（注册冲突/refreshHash 唯一
+//     挂载/Kick 三态/KickUser 聚合计数，键布局见类型注释），MemRegistry 自
+//     #196 起也构建在它之上（MemSessionStore + StoreRegistry），不再维护第二套
+//     索引实现；
+//   - authz/authztest 是对外契约测试套件：下游把自己的 SessionStore 实现塞进
+//     authztest.Run，即可覆盖原语语义与注册表行为（重复 ID、refreshHash 已挂载、
+//     Kick 三态/拉黑命中、KickUser 聚合计数等）。kitx 自身用它回归
+//     MemSessionStore。
 //
 // 撤销语义两层：
 //
@@ -27,6 +40,9 @@
 // 语义供 refresh 轮换防重放拍板）、KickUser 全会话强踢。编排层（kitx/auth）
 // 在此之上交付签发尾段/轮换/登出/改密吊销的单点语义。
 //
-// 并发契约：MemRevoker / MemRegistry 全方法并发安全（共享状态 mutex 保护），
-// 不启动后台 goroutine——过期条目读判即视为不在，Sweep 可手动清扫。
+// 并发契约：MemRevoker / MemRegistry / MemSessionStore / StoreRegistry 全方法
+// 并发安全。StoreRegistry 用 SetNX 操作锁串行同一会话 ID 的 Register 全程与
+// Kick 的读快照/代次复核删键临界区（拉黑调用在锁外；锁 TTL 30s，释放失败仅
+// 记日志、TTL 自愈）；内存实现不启动后台 goroutine——过期条目读判即视为不在，
+// Sweep 可手动清扫。
 package authz

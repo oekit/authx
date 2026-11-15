@@ -3,9 +3,6 @@ package authz
 import (
 	"context"
 	"errors"
-	"fmt"
-	"slices"
-	"sync"
 	"time"
 )
 
@@ -45,8 +42,8 @@ type Session struct {
 //
 // 生命周期契约：登记 TTL 是 refresh 令牌的**剩余寿命**（编排层以 ttlRefresh
 // 登记）——会话过期即两令牌都已自然失效（编排层保证 ttlRefresh ≥ ttlAccess，
-// 登记 TTL 是两令牌寿命的上界）。持久实现（Redis）按键前缀可配 + TTL=登记
-// 寿命落地即可。
+// 登记 TTL 是两令牌寿命的上界）。MemRegistry（进程内）与 StoreRegistry
+// （SessionStore 编排，Redis 等持久形态，#196）都实现本契约。
 //
 // 强踢契约（Kick）：**双 hash 拉黑 + 删键**一次落地——只删登记不拉黑等于假
 // 强踢（令牌还活着），只拉黑不删键会让会话继续被枚举为在线。拉黑落地失败时
@@ -66,7 +63,7 @@ type SessionRegistry interface {
 	//   - (true, nil)：完整下线（拉黑与删键都已落地）；
 	//   - (false, nil)：登记不存在（幂等强踢的常态 / 轮换竞态的败方 / 同 ID
 	//     会话已重建的 ABA 败方，#136）；
-	//   - (false, err)：拉黑落地失败，登记**保留**（可重试）。
+	//   - (false, err)：拉黑或下线前置落地失败，登记**保留**（可重试）。
 	//
 	// 原子认领（claim）是 refresh 轮换防重放的拍板点：并发轮换/强踢竞争同一
 	// 会话时恰有一个调用拿到 true，其余按败方拒绝——「旧 refresh 二次使用被拒」
@@ -79,31 +76,25 @@ type SessionRegistry interface {
 	KickUser(ctx context.Context, userID string) (int, error)
 }
 
-// regEntry 登记项（会话 + 到期时刻）。
-type regEntry struct {
-	session   Session
-	expiresAt time.Time
-}
-
-// MemRegistry 是 SessionRegistry 的内存实现：并发安全（mutex 保护），
-// 与 MemRevoker 配对使用（Kick 的双 hash 拉黑经构造注入的 Revoker 落地）。
+// MemRegistry 是 SessionRegistry 的内存实现：基于 MemSessionStore + StoreRegistry
+// 编排层（#196 起不再维护第二套索引实现），与 MemRevoker 配对使用（Kick 的
+// 双 hash 拉黑经构造注入的 Revoker 落地）。
 //
 // 定位与 MemRevoker 一致：单实例进程内形态 + 契约测试替身。不启动后台
 // goroutine——过期会话读判即视为不在，Sweep 可手动回收。
 type MemRegistry struct {
-	mu        sync.RWMutex
-	rev       Revoker
-	now       func() time.Time
-	byID      map[string]*regEntry           // 会话 ID → 登记项
-	byRefresh map[string]string              // RefreshHash → 会话 ID
-	byUser    map[string]map[string]struct{} // userID → 会话 ID 集合
+	*StoreRegistry
+	store *MemSessionStore
+	now   func() time.Time
 }
+
+var _ SessionRegistry = (*MemRegistry)(nil)
 
 // MemRegistryOption 是 NewMemRegistry 的函数选项。
 type MemRegistryOption func(*MemRegistry)
 
 // WithRegistryClock 注入 MemRegistry 时钟（f 为 nil 直接 panic，WithRevokerClock
-// 同款纪律）。
+// 同款纪律）。时钟同时用于内存 store 的 TTL 判定。
 func WithRegistryClock(f func() time.Time) MemRegistryOption {
 	return func(m *MemRegistry) {
 		if f == nil {
@@ -120,218 +111,22 @@ func NewMemRegistry(rev Revoker, opts ...MemRegistryOption) *MemRegistry {
 	if rev == nil {
 		panic("authz: NewMemRegistry 需要非 nil Revoker——Kick/KickUser 的双 hash 拉黑经它落地，无拉黑的强踢是假强踢")
 	}
-	m := &MemRegistry{
-		rev:       rev,
-		now:       time.Now,
-		byID:      make(map[string]*regEntry),
-		byRefresh: make(map[string]string),
-		byUser:    make(map[string]map[string]struct{}),
-	}
+	m := &MemRegistry{now: time.Now}
 	for _, opt := range opts {
 		opt(m)
 	}
+	m.store = NewMemSessionStore(WithSessionStoreClock(m.now))
+	reg, err := NewStoreRegistry(rev, m.store)
+	if err != nil {
+		// 构造参数已在本函数内校验（rev 非 nil、store 非 nil），走到这里属于
+		// 编程错误：与同包构造期 fail-fast 口径一致。
+		panic("authz: NewMemRegistry 构造 StoreRegistry 失败: " + err.Error())
+	}
+	m.StoreRegistry = reg
 	return m
-}
-
-// Register 登记会话（契约见 SessionRegistry）。
-func (m *MemRegistry) Register(ctx context.Context, s Session, ttl time.Duration) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if s.ID == "" || s.UserID == "" || s.RefreshHash == "" {
-		return fmt.Errorf("authz: Register 的 ID/UserID/RefreshHash 必填（ID=登记主键、RefreshHash=轮换认领键）")
-	}
-	if ttl <= 0 {
-		return fmt.Errorf("authz: Register 的 ttl 必须为正（got %v）——ttl 是 refresh 剩余寿命，零值透传等于登记长生会话（#65 同款纪律）", ttl)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.now()
-	m.sweepLocked(now)
-	if old, ok := m.byID[s.ID]; ok && now.Before(old.expiresAt) {
-		return fmt.Errorf("authz: 会话 ID %q 已登记——登记不可覆盖，先 Kick 再登记", s.ID)
-	}
-	if owner, ok := m.byRefresh[s.RefreshHash]; ok && owner != s.ID {
-		if old, ok2 := m.byID[owner]; ok2 && now.Before(old.expiresAt) {
-			return fmt.Errorf("authz: RefreshHash 已挂在会话 %q 上——同一 refresh 不得挂两枚会话（登记面亦是防重放面）", owner)
-		}
-	}
-	m.removeLocked(s.ID)
-	m.byID[s.ID] = &regEntry{session: s, expiresAt: now.Add(ttl)}
-	m.byRefresh[s.RefreshHash] = s.ID
-	if m.byUser[s.UserID] == nil {
-		m.byUser[s.UserID] = make(map[string]struct{})
-	}
-	m.byUser[s.UserID][s.ID] = struct{}{}
-	return nil
-}
-
-// GetByRefreshHash 按 refresh 哈希查会话（契约见 SessionRegistry）。
-func (m *MemRegistry) GetByRefreshHash(ctx context.Context, refreshHash string) (Session, error) {
-	if err := ctx.Err(); err != nil {
-		return Session{}, err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.now()
-	id, ok := m.byRefresh[refreshHash]
-	if !ok {
-		return Session{}, ErrSessionNotFound
-	}
-	entry, ok := m.byID[id]
-	if !ok || !now.Before(entry.expiresAt) {
-		// 索引残留/过期：就地出清，语义等同不在。
-		delete(m.byRefresh, refreshHash)
-		return Session{}, ErrSessionNotFound
-	}
-	return entry.session, nil
-}
-
-// ListByUser 枚举某用户的在线会话（契约见 SessionRegistry）。
-func (m *MemRegistry) ListByUser(ctx context.Context, userID string) ([]Session, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.now()
-	out := make([]Session, 0, len(m.byUser[userID]))
-	for id := range m.byUser[userID] {
-		entry, ok := m.byID[id]
-		if !ok || !now.Before(entry.expiresAt) {
-			continue
-		}
-		out = append(out, entry.session)
-	}
-	// 稳定排序（LoginAt → ID）：管理端枚举顺序确定，不随 map 遍历序漂。
-	slices.SortFunc(out, func(a, b Session) int {
-		if c := a.LoginAt.Compare(b.LoginAt); c != 0 {
-			return c
-		}
-		if a.ID < b.ID {
-			return -1
-		}
-		if a.ID > b.ID {
-			return 1
-		}
-		return 0
-	})
-	return out, nil
-}
-
-// Kick 强踢单会话（契约见 SessionRegistry 的三态返回）。
-//
-// 时序：先拉黑（登记保留、失败可重试）后原子删键（claim 拍板）——拉黑失败
-// 时不动登记，避免「登记没了、令牌还活着」的假下线。
-//
-// ABA 防护（#136）：解锁-重锁窗口里同 ID 登记可能被「其它 Kick/KickUser 踢掉
-// + Register 重建」（Register 摘旧键再登记新项，换的是新 *regEntry）。重锁后
-// 按**登记项身份**（指针比较，天然可比较）复核而非存在性——只判存在会把重建
-// 会话连同索引静默误删还报 true，强踢漏拉黑且用户被莫名下线。
-func (m *MemRegistry) Kick(ctx context.Context, id string) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	m.mu.Lock()
-	entry, ok := m.byID[id]
-	if !ok || !m.now().Before(entry.expiresAt) {
-		m.removeLocked(id) // 过期/残留顺带出清
-		m.mu.Unlock()
-		return false, nil
-	}
-	s := entry.session
-	remaining := entry.expiresAt.Sub(m.now())
-	m.mu.Unlock()
-
-	var errs []error
-	if s.AccessHash != "" {
-		if err := m.rev.Revoke(ctx, s.AccessHash, remaining); err != nil {
-			errs = append(errs, fmt.Errorf("拉黑 access: %w", err))
-		}
-	}
-	if s.RefreshHash != "" {
-		if err := m.rev.Revoke(ctx, s.RefreshHash, remaining); err != nil {
-			errs = append(errs, fmt.Errorf("拉黑 refresh: %w", err))
-		}
-	}
-	if len(errs) > 0 {
-		return false, errors.Join(errs...) // errors.Join：双路拉黑失败聚合报全
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// 身份复检（#136 ABA 修复）：!ok 是竞态败方（已被其它 Kick/KickUser 认领）；
-	// cur != entry 是同 ID 会话已重建（ABA）——重建的会话未被本调用拉黑，
-	// 不得删，按败方拒绝。
-	if cur, ok := m.byID[id]; !ok || cur != entry {
-		return false, nil
-	}
-	m.removeLocked(id)
-	return true, nil
-}
-
-// KickUser 强踢某用户全部在线会话（契约见 SessionRegistry）。
-func (m *MemRegistry) KickUser(ctx context.Context, userID string) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	m.mu.Lock()
-	now := m.now()
-	ids := make([]string, 0, len(m.byUser[userID]))
-	for id := range m.byUser[userID] {
-		entry, ok := m.byID[id]
-		if !ok || !now.Before(entry.expiresAt) {
-			continue
-		}
-		ids = append(ids, id)
-	}
-	m.mu.Unlock()
-
-	count := 0
-	var errs []error
-	for _, id := range ids {
-		kicked, err := m.Kick(ctx, id)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if kicked {
-			count++
-		}
-	}
-	return count, errors.Join(errs...)
 }
 
 // Sweep 回收过期登记（读路径已把过期会话视为不在，Sweep 只影响内存占用）。
 func (m *MemRegistry) Sweep() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sweepLocked(m.now())
-}
-
-// sweepLocked 出清过期登记（调用方持锁）。
-func (m *MemRegistry) sweepLocked(now time.Time) {
-	for id, entry := range m.byID {
-		if !now.Before(entry.expiresAt) {
-			m.removeLocked(id)
-		}
-	}
-}
-
-// removeLocked 摘除一条登记（主键 + 双索引，调用方持锁）。
-func (m *MemRegistry) removeLocked(id string) {
-	entry, ok := m.byID[id]
-	if !ok {
-		return
-	}
-	delete(m.byID, id)
-	if owner, ok := m.byRefresh[entry.session.RefreshHash]; ok && owner == id {
-		delete(m.byRefresh, entry.session.RefreshHash)
-	}
-	if set, ok := m.byUser[entry.session.UserID]; ok {
-		delete(set, id)
-		if len(set) == 0 {
-			delete(m.byUser, entry.session.UserID)
-		}
-	}
+	m.store.Sweep()
 }

@@ -419,11 +419,11 @@ func TestMemRegistrySweep(t *testing.T) {
 	}
 	clk.Advance(2 * time.Minute)
 	reg.Sweep()
-	reg.mu.RLock()
-	defer reg.mu.RUnlock()
-	if len(reg.byID) != 0 || len(reg.byRefresh) != 0 || len(reg.byUser) != 0 {
-		t.Fatalf("Sweep 后残留：byID=%d byRefresh=%d byUser=%d",
-			len(reg.byID), len(reg.byRefresh), len(reg.byUser))
+	reg.store.mu.Lock()
+	defer reg.store.mu.Unlock()
+	if len(reg.store.kv) != 0 || len(reg.store.sets) != 0 {
+		t.Fatalf("Sweep 后残留：kv=%d sets=%d（主键/索引/操作锁均应过期出清）",
+			len(reg.store.kv), len(reg.store.sets))
 	}
 }
 

@@ -38,16 +38,16 @@ func (g *gateRevoker) RevokedUser(ctx context.Context, userID string, iat time.T
 }
 
 // #136 回归（-race）：Kick 解锁-重锁窗口的 ABA——重锁后复检必须按登记项
-// **身份**（*regEntry 指针）而非存在性。
+// **身份**（落盘代次）而非存在性。
 //
 // 交错编排（闸门把 A 的首次拉黑卡在锁外，其余步骤主线程定序）：
 //
 //	A.Kick(s1)：持锁读到 E1 → 解锁 → 拉黑 access（卡闸）
 //	B.Kick(s1)：完整踢掉 E1（双 hash 拉黑 + 删键，true）
-//	C.Register(s1)：同 ID 重建会话（RefreshHash 不同，新 *regEntry）
-//	A 放行 → 重锁：byID[s1] 命中的是 C 的新登记
+//	C.Register(s1)：同 ID 重建会话（RefreshHash 不同，新登记代次）
+//	A 放行 → 重锁：主键命中的是 C 的新登记
 //
-// 修复语义：A 复检指针 ≠ 自己读到的 entry ⇒ 判败方返回 (false, nil)，C 的
+// 修复语义：A 复检代次 ≠ 自己读到的代次 ⇒ 判败方返回 (false, nil)，C 的
 // 重建会话原地不动。若只判存在性（修复前），A 会把 C 的会话连同双索引静默
 // 误删还报 (true, nil)——下游自定义固定 ID 会话 / 对拍 Redis 实现时窗口真实
 // 存在（库内随机 32 hex 会话 ID 概率≈0 不代表接口契约安全）。
