@@ -45,19 +45,19 @@ func checkSecret(secret []byte) error {
 
 // Sign 用 HS256 签发令牌：选项与签发语义（缺省 ttl=24h、iat/exp 同钟源、注册
 // 声明注入面防护 #71）与 RS256 的 Sign 完全同一套（#86）。header 硬契约同形态：
-// 只含 {"alg":"HS256"}，不带 typ。
+// 缺省只含 {"alg":"HS256"}，WithKeyID 显式追加 kid（#195），不带 typ。
 func (s *SymmetricSigner) Sign(opts ...SignOption) (string, error) {
 	if s == nil || len(s.secret) == 0 {
 		// 哨兵错误（#139）：与 RS256 形态（jwt.go Sign 的错误面）对称——外层可
 		// errors.Is(ErrInvalidToken)，调用方对签名路径的失败可统一分流。
 		return "", fmt.Errorf("%w: 缺少 HS256 共享密钥", ErrInvalidToken)
 	}
-	payload, err := signPayload(opts)
+	payload, header, err := signParts("HS256", opts)
 	if err != nil {
 		return "", err
 	}
 	tok := gojwt.NewWithClaims(gojwt.SigningMethodHS256, gojwt.MapClaims(payload))
-	tok.Header = map[string]any{"alg": "HS256"} // 硬契约：header 只含 alg
+	tok.Header = header
 	return tok.SignedString(s.secret)
 }
 
@@ -72,25 +72,42 @@ func (s *SymmetricSigner) Sign(opts ...SignOption) (string, error) {
 // 白名单，RS256 令牌（无论密钥对真假）在本入口一律拒绝；RS256 的 Parse 同理只认
 // RS256。密钥形态绑定算法，杜绝「用 HMAC 密钥校验非对称签名」的经典 CVE 形态。
 func ParseSymmetric(token string, secret []byte, opts ...ParseOption) (*Claims, error) {
-	if err := checkSecret(secret); err != nil {
-		// 双 %w 保留内层错误链（#139）：%v 会把链拍平成纯文本，调用方无法
-		// errors.Is 穿透内层哨兵（同包 #70 双 %w 纪律的漏网点）。
-		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, err)
-	}
 	o := &parseOptions{leeway: defaultLeeway}
 	for _, opt := range opts {
 		opt(o)
 	}
+	if o.rsaKeyByID != nil {
+		return nil, fmt.Errorf("%w: WithKeyIDResolver 只适用于 RS256 入口 Parse（HS256 请用 WithSymmetricKeyIDResolver）", ErrInvalidToken)
+	}
+	if o.symKeyByID == nil {
+		if err := checkSecret(secret); err != nil {
+			// 双 %w 保留内层错误链（#139）：%v 会把链拍平成纯文本，调用方无法
+			// errors.Is 穿透内层哨兵（同包 #70 双 %w 纪律的漏网点）。
+			return nil, fmt.Errorf("%w: %w", ErrInvalidToken, err)
+		}
+	}
 	tok, err := newParser(o, "HS256").Parse(token, func(t *gojwt.Token) (any, error) {
+		if o.symKeyByID != nil {
+			// #195 多钥轮换：按 header kid 选共享密钥；选中密钥仍走同一强度
+			// 判据（密钥环里的弱密钥不能成为绕过 NewSymmetric 的缺口）。
+			kid, err := headerKeyID(t.Header)
+			if err != nil {
+				return nil, err
+			}
+			key, err := o.symKeyByID(kid)
+			if err != nil {
+				return nil, fmt.Errorf("按 kid %q 选共享密钥: %w", kid, err)
+			}
+			if err := checkSecret(key); err != nil {
+				return nil, fmt.Errorf("按 kid %q 选中的共享密钥不可用: %w", kid, err)
+			}
+			return key, nil
+		}
 		return secret, nil
 	})
 	if err != nil {
 		// 双 %w 保留底层错误链（同 Parse/#70）。
 		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
-	mc, ok := tok.Claims.(gojwt.MapClaims)
-	if !ok {
-		return nil, fmt.Errorf("%w: 载荷类型异常", ErrInvalidToken)
-	}
-	return claimsFromMap(mc)
+	return claimsFromToken(tok)
 }
