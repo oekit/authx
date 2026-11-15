@@ -1,3 +1,10 @@
+## [v0.10.0] — 2026-11-16
+
+- - jwt 签发支持注入 `kid`（`WithKeyID`）：header 保持「alg(+kid)」窄契约，OIDC id_token/JWKS 场景可直接签发；解析侧新增 header 读取与 `WithKeyIDResolver` 多钥轮换选钥，无需自拆 token（#195）。
+- authz 会话面拆出 `SessionStore` 存储适配层：多实例下游实现 8 个方法的 store 即可复用 kitx 编排（注册冲突/refreshHash 唯一挂载/kick 三态/KickUser 聚合），不再各写 400+ 行 Redis 索引；新增 `authz/authztest` 契约套件供宿主实现自证（#196）。
+
+关联问题单：kitx#195、kitx#196。
+
 ## [v0.9.4] — 2026-11-15
 
 - RevokeUser 拒绝零值 at fail-fast（#188）：MemRevoker.RevokeUser 对 at.IsZero() 报错不留状态，与 Revoke 非正 remaining 同纪律，Revoker 接口文档同步契约
