@@ -28,6 +28,12 @@ type User struct {
 	// 不得占用 rolesClaim 键（Roles 是角色的唯一入口）与 jwt 保留声明
 	// （iss/sub/aud/exp/nbf/iat/jti/token_type，#71 注入面防护在 jwt 层）。
 	Claims map[string]any
+	// Audience 受众集（#204：issueTail 翻译成 jwt.WithAudienceClaims——
+	// OAuth 场景即 client_id，标准 aud 声明对接生态工具而非私有 cid）。
+	// 非保留字段：与 Claims map 的注入面防护不冲突（Claims 仍禁占 aud 键），
+	// 本字段是 Flow 的结构化 aud 通道。RotateRefresh 时旧令牌的 aud 自动
+	// 继承到新令牌（轮换不丢受众）。
+	Audience []string
 }
 
 // SessionMeta 是会话登记的登录上下文（设备/网络维度，管理端枚举与审计用）。
@@ -252,6 +258,11 @@ func (f *Flow) RotateRefresh(ctx context.Context, repo UserRepo, refresh string,
 	}
 
 	u := &User{ID: user.ID, Roles: roles, Claims: user.Claims}
+	// #204：旧令牌的 aud 自动继承到新令牌——轮换不丢受众（OAuth 场景 =
+	// 刷新后的令牌仍绑定同一 client，标准 aud 对接生态工具）。
+	if len(claims.Audience) > 0 {
+		u.Audience = claims.Audience
+	}
 	pair, err := f.issueTail(ctx, u, meta)
 	if err != nil {
 		// 旧会话已下线（fail-closed）：客户端重新登录。新令牌的无主残留由
@@ -384,6 +395,10 @@ func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*Token
 	}
 	if len(u.Roles) > 0 {
 		opts = append(opts, jwt.WithClaim(f.rolesClaim, slices.Clone(u.Roles)))
+	}
+	// #204：Audience 受众集翻译成 jwt 层 aud 声明（OAuth 场景 = client_id）。
+	if len(u.Audience) > 0 {
+		opts = append(opts, jwt.WithAudienceClaims(u.Audience...))
 	}
 	access, refresh, err := f.jwt.IssuePair(u.ID, f.ttlAccess, f.ttlRefresh, opts...)
 	if err != nil {
