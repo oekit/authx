@@ -2,9 +2,10 @@ package authz
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
+
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // SessionStore 是 SessionRegistry 编排层依赖的最小存储面（#196）：键值 +
@@ -132,7 +133,7 @@ func (m *MemSessionStore) SetNX(ctx context.Context, key, value string, ttl time
 		return false, err
 	}
 	if ttl <= 0 {
-		return false, fmt.Errorf("authz: MemSessionStore.SetNX 的 ttl 必须为正（got %v）", ttl)
+		return false, bizerrors.Newf("authz: MemSessionStore.SetNX 的 ttl 必须为正（got %v）", ttl)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -169,7 +170,7 @@ func (m *MemSessionStore) SAdd(ctx context.Context, key, member string, ttl time
 		return err
 	}
 	if ttl <= 0 {
-		return fmt.Errorf("authz: MemSessionStore.SAdd 的 ttl 必须为正（got %v）", ttl)
+		return bizerrors.Newf("authz: MemSessionStore.SAdd 的 ttl 必须为正（got %v）", ttl)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -228,7 +229,7 @@ func (m *MemSessionStore) Expire(ctx context.Context, key string, ttl time.Durat
 		return false, err
 	}
 	if ttl <= 0 {
-		return false, fmt.Errorf("authz: MemSessionStore.Expire 的 ttl 必须为正（got %v）", ttl)
+		return false, bizerrors.Newf("authz: MemSessionStore.Expire 的 ttl 必须为正（got %v）", ttl)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

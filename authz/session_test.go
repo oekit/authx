@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // newTestSession 造一条合法登记项（hash 已按 TokenHash 口径）。
@@ -199,7 +201,7 @@ type failingRevoker struct {
 
 func (f *failingRevoker) Revoke(ctx context.Context, hash string, remaining time.Duration) error {
 	if f.fail[hash] {
-		return fmt.Errorf("存储故障(%s)", hash)
+		return bizerrors.Newf("存储故障(%s)", hash)
 	}
 	return f.inner.Revoke(ctx, hash, remaining)
 }
