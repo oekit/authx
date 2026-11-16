@@ -30,6 +30,7 @@ import (
 	"time"
 
 	gojwt "github.com/golang-jwt/jwt/v5"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // ErrInvalidToken 表示令牌无法解析或校验失败。
@@ -370,10 +371,10 @@ func Parse(token string, pub *rsa.PublicKey, opts ...ParseOption) (*Claims, erro
 			}
 			key, err := o.rsaKeyByID(kid)
 			if err != nil {
-				return nil, fmt.Errorf("按 kid %q 选公钥: %w", kid, err)
+				return nil, bizerrors.Wrapf(err, "按 kid %q 选公钥", kid)
 			}
 			if key == nil {
-				return nil, fmt.Errorf("按 kid %q 选公钥返回 nil", kid)
+				return nil, bizerrors.Newf("按 kid %q 选公钥返回 nil", kid)
 			}
 			return key, nil
 		}
@@ -441,11 +442,11 @@ func cloneHeader(h map[string]any) map[string]any {
 func headerKeyID(header map[string]any) (string, error) {
 	v, ok := header["kid"]
 	if !ok {
-		return "", fmt.Errorf("header 缺少 kid，无法按密钥 ID 选钥")
+		return "", bizerrors.New("header 缺少 kid，无法按密钥 ID 选钥")
 	}
 	kid, ok := v.(string)
 	if !ok || kid == "" {
-		return "", fmt.Errorf("header kid 类型异常或为空: %T", v)
+		return "", bizerrors.Newf("header kid 类型异常或为空: %T", v)
 	}
 	return kid, nil
 }
@@ -520,7 +521,7 @@ func mapStr(mc gojwt.MapClaims, key string) (string, error) {
 	}
 	s, ok := v.(string)
 	if !ok {
-		return "", fmt.Errorf("声明 %s 类型异常: %T", key, v)
+		return "", bizerrors.Newf("声明 %s 类型异常: %T", key, v)
 	}
 	return s, nil
 }

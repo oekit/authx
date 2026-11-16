@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	gojwt "github.com/golang-jwt/jwt/v5"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // hs256SecretMinLen 是 HS256 共享密钥的最小长度（字节）。RFC 7518 §3.2 要求密钥
@@ -38,7 +39,7 @@ func NewSymmetric(secret []byte) (*SymmetricSigner, error) {
 // checkSecret 校验共享密钥强度（NewSymmetric 构造期与 ParseSymmetric 同一判据）。
 func checkSecret(secret []byte) error {
 	if len(secret) < hs256SecretMinLen {
-		return fmt.Errorf("HS256 共享密钥缺失或过弱（%d 字节 < 下限 %d 字节，RFC 7518 §3.2）——弱 HMAC 密钥 fail-fast 不做静默兼容（#86）", len(secret), hs256SecretMinLen)
+		return bizerrors.Newf("HS256 共享密钥缺失或过弱（%d 字节 < 下限 %d 字节，RFC 7518 §3.2）——弱 HMAC 密钥 fail-fast 不做静默兼容（#86）", len(secret), hs256SecretMinLen)
 	}
 	return nil
 }
@@ -96,10 +97,10 @@ func ParseSymmetric(token string, secret []byte, opts ...ParseOption) (*Claims, 
 			}
 			key, err := o.symKeyByID(kid)
 			if err != nil {
-				return nil, fmt.Errorf("按 kid %q 选共享密钥: %w", kid, err)
+				return nil, bizerrors.Wrapf(err, "按 kid %q 选共享密钥", kid)
 			}
 			if err := checkSecret(key); err != nil {
-				return nil, fmt.Errorf("按 kid %q 选中的共享密钥不可用: %w", kid, err)
+				return nil, bizerrors.Wrapf(err, "按 kid %q 选中的共享密钥不可用", kid)
 			}
 			return key, nil
 		}

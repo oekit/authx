@@ -5,7 +5,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
+
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // KeyPair 持有 RS256 的密钥对。
@@ -21,7 +22,7 @@ func GenerateKeyPair(bits int) (*KeyPair, error) {
 	}
 	key, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
-		return nil, fmt.Errorf("生成 RSA 密钥对: %w", err)
+		return nil, bizerrors.Wrapf(err, "生成 RSA 密钥对")
 	}
 	return &KeyPair{Private: key, Public: &key.PublicKey}, nil
 }
@@ -34,15 +35,15 @@ func GenerateKeyPair(bits int) (*KeyPair, error) {
 // NewSymmetric/GenerateKeyPair 的「非法输入返回 error」风格不一致。
 func MarshalKeyPairPEM(kp *KeyPair) (privPEM, pubPEM string, err error) {
 	if kp == nil || kp.Private == nil {
-		return "", "", fmt.Errorf("缺少私钥")
+		return "", "", bizerrors.New("缺少私钥")
 	}
 	if kp.Public == nil {
-		return "", "", fmt.Errorf("缺少公钥")
+		return "", "", bizerrors.New("缺少公钥")
 	}
 	privBlock := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(kp.Private)}
 	pubBytes, err := x509.MarshalPKIXPublicKey(kp.Public)
 	if err != nil {
-		return "", "", fmt.Errorf("编码公钥: %w", err)
+		return "", "", bizerrors.Wrapf(err, "编码公钥")
 	}
 	pubBlock := &pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes}
 	return string(pem.EncodeToMemory(privBlock)), string(pem.EncodeToMemory(pubBlock)), nil
@@ -52,18 +53,18 @@ func MarshalKeyPairPEM(kp *KeyPair) (privPEM, pubPEM string, err error) {
 func ParsePrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
-		return nil, fmt.Errorf("私钥不是合法的 PEM")
+		return nil, bizerrors.New("私钥不是合法的 PEM")
 	}
 	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
 		return key, nil
 	}
 	anyKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("解析私钥失败: %w", err)
+		return nil, bizerrors.Wrapf(err, "解析私钥失败")
 	}
 	rsaKey, ok := anyKey.(*rsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("私钥不是 RSA 私钥")
+		return nil, bizerrors.New("私钥不是 RSA 私钥")
 	}
 	return rsaKey, nil
 }
@@ -72,7 +73,7 @@ func ParsePrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 func ParsePublicKey(pemBytes []byte) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
-		return nil, fmt.Errorf("公钥不是合法的 PEM")
+		return nil, bizerrors.New("公钥不是合法的 PEM")
 	}
 	if key, err := x509.ParsePKCS1PublicKey(block.Bytes); err == nil {
 		return key, nil
@@ -81,15 +82,15 @@ func ParsePublicKey(pemBytes []byte) (*rsa.PublicKey, error) {
 		if pub, ok := cert.PublicKey.(*rsa.PublicKey); ok {
 			return pub, nil
 		}
-		return nil, fmt.Errorf("证书公钥不是 RSA 公钥")
+		return nil, bizerrors.New("证书公钥不是 RSA 公钥")
 	}
 	anyKey, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("解析公钥失败: %w", err)
+		return nil, bizerrors.Wrapf(err, "解析公钥失败")
 	}
 	rsaKey, ok := anyKey.(*rsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("公钥不是 RSA 公钥")
+		return nil, bizerrors.New("公钥不是 RSA 公钥")
 	}
 	return rsaKey, nil
 }

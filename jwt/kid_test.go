@@ -4,12 +4,12 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	gojwt "github.com/golang-jwt/jwt/v5"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // testFixedSignTime 固定签发时刻（确定性令牌字节；取未来时刻保证 exp 有效）。
@@ -124,7 +124,7 @@ func TestParseWithKeyIDResolver(t *testing.T) {
 	resolve := func(kid string) (*rsa.PublicKey, error) {
 		pub, ok := keys[kid]
 		if !ok {
-			return nil, fmt.Errorf("未知 kid %q", kid)
+			return nil, bizerrors.Newf("未知 kid %q", kid)
 		}
 		return pub, nil
 	}
@@ -143,7 +143,7 @@ func TestParseWithKeyIDResolver(t *testing.T) {
 
 	// 未知 kid ⇒ fail-closed，错误链保留解析器原因与外层哨兵。
 	_, err = Parse(token, nil, WithKeyIDResolver(func(string) (*rsa.PublicKey, error) {
-		return nil, fmt.Errorf("密钥环查询失败")
+		return nil, bizerrors.New("密钥环查询失败")
 	}))
 	if !errors.Is(err, ErrInvalidToken) || !strings.Contains(err.Error(), "密钥环查询失败") {
 		t.Fatalf("未知 kid 必须拒绝并保留原因，got %v", err)
@@ -208,7 +208,7 @@ func TestSymmetricKeyID(t *testing.T) {
 		case "h2":
 			return secret2, nil
 		default:
-			return nil, fmt.Errorf("未知 kid %q", kid)
+			return nil, bizerrors.Newf("未知 kid %q", kid)
 		}
 	}
 	claims, err := ParseSymmetric(token, nil, WithSymmetricKeyIDResolver(resolve))
@@ -220,7 +220,7 @@ func TestSymmetricKeyID(t *testing.T) {
 	}
 	// 未知 kid ⇒ 拒绝。
 	if _, err := ParseSymmetric(token, nil, WithSymmetricKeyIDResolver(func(string) ([]byte, error) {
-		return nil, fmt.Errorf("密钥环故障")
+		return nil, bizerrors.New("密钥环故障")
 	})); !errors.Is(err, ErrInvalidToken) || !strings.Contains(err.Error(), "密钥环故障") {
 		t.Fatalf("未知 kid 必须拒绝并保留原因，got %v", err)
 	}
