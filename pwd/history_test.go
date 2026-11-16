@@ -3,9 +3,10 @@ package pwd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
+
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // 直等比对器（测试替身：真实形态是 bcrypt.CompareHashAndPassword 包装）。
@@ -18,7 +19,7 @@ func TestHistoryCheckFailClosed(t *testing.T) {
 	fetchErr := HistoryCheck{
 		Count: 3,
 		Fetch: func(context.Context, string, int) ([]string, error) {
-			return nil, fmt.Errorf("db down")
+			return nil, bizerrors.New("db down")
 		},
 		Match: plainMatch,
 	}
@@ -36,7 +37,7 @@ func TestHistoryCheckFailClosed(t *testing.T) {
 	matchErr := HistoryCheck{
 		Count: 3,
 		Fetch: func(context.Context, string, int) ([]string, error) { return []string{"bad-hash"}, nil },
-		Match: func(stored, candidate string) (bool, error) { return false, fmt.Errorf("hash format") },
+		Match: func(stored, candidate string) (bool, error) { return false, bizerrors.New("hash format") },
 	}
 	if err := matchErr.Check(ctx, "u1", "new-password"); err == nil || IsViolation(err) {
 		t.Fatalf("比对失败必须 fail-closed 上抛，got %v", err)

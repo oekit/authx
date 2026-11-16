@@ -69,7 +69,7 @@ func AsViolation(err error) (*Violation, bool) {
 // 返回普通 error（归 500，#115 同口径）。
 func CheckMinLength(password string, min int, msgFormat string) error {
 	if min < 1 {
-		return fmt.Errorf("pwd: CheckMinLength 的 min 必须 ≥ 1（got %d）——最小长度是密码策略的地板", min)
+		return bizerrors.Newf("pwd: CheckMinLength 的 min 必须 ≥ 1（got %d）——最小长度是密码策略的地板", min)
 	}
 	if n := len([]rune(password)); n < min {
 		return &Violation{Kind: KindLength, Message: formatMsg(msgFormat, "密码至少 %d 个字符", min)}
@@ -116,10 +116,10 @@ type Policy struct {
 // Check 校验密码是否满足策略（见 Policy 的判定顺序与配置契约）。
 func (p Policy) Check(password string) error {
 	if p.MinLength < 1 {
-		return fmt.Errorf("pwd: Policy.MinLength 必须 ≥ 1（got %d）——最小长度是密码策略的地板，零值=无长度防线", p.MinLength)
+		return bizerrors.Newf("pwd: Policy.MinLength 必须 ≥ 1（got %d）——最小长度是密码策略的地板，零值=无长度防线", p.MinLength)
 	}
 	if p.MaxLength < 0 {
-		return fmt.Errorf("pwd: Policy.MaxLength 不能为负（got %d）——不限长请置 0", p.MaxLength)
+		return bizerrors.Newf("pwd: Policy.MaxLength 不能为负（got %d）——不限长请置 0", p.MaxLength)
 	}
 	runes := []rune(password)
 	if err := CheckMinLength(password, p.MinLength, ""); err != nil {

@@ -2,8 +2,9 @@ package pwd
 
 import (
 	"context"
-	"fmt"
 	"time"
+
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // TokenStaleBefore 令牌陈旧判定（#121 秒截断比较，本包的单点实现——
@@ -45,7 +46,7 @@ func ApplyExpiryOnLogin(ctx context.Context, days int, mustChange *bool, changed
 		return nil
 	}
 	if mustChange == nil {
-		return fmt.Errorf("pwd: ApplyExpiryOnLogin 的 mustChange 不能为 nil")
+		return bizerrors.New("pwd: ApplyExpiryOnLogin 的 mustChange 不能为 nil")
 	}
 	if changedAt == nil {
 		return nil
@@ -56,7 +57,7 @@ func ApplyExpiryOnLogin(ctx context.Context, days int, mustChange *bool, changed
 	*mustChange = true
 	if persist != nil {
 		if err := persist(ctx); err != nil {
-			return fmt.Errorf("pwd: 过期标记落库失败（fail-closed）: %w", err)
+			return bizerrors.Wrapf(err, "pwd: 过期标记落库失败（fail-closed）")
 		}
 	}
 	return nil
