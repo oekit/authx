@@ -1,3 +1,7 @@
+## [v0.10.1] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
+
 ## [v0.10.0] — 2026-11-16
 
 - - jwt 签发支持注入 `kid`（`WithKeyID`）：header 保持「alg(+kid)」窄契约，OIDC id_token/JWKS 场景可直接签发；解析侧新增 header 读取与 `WithKeyIDResolver` 多钥轮换选钥，无需自拆 token（#195）。
