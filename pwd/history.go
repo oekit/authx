@@ -2,7 +2,8 @@ package pwd
 
 import (
 	"context"
-	"fmt"
+
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // HistorySource 历史密码取数面：返回该用户最近 count 条历史密码的**存储形态**
@@ -40,19 +41,19 @@ type HistoryCheck struct {
 // Check 判定候选密码是否与历史重复（契约见 HistoryCheck）。
 func (h HistoryCheck) Check(ctx context.Context, userID, candidate string) error {
 	if h.Count < 1 || h.Fetch == nil || h.Match == nil {
-		return fmt.Errorf("pwd: HistoryCheck 配置非法（Count≥1 且 Fetch/Match 非 nil 才启用历史防复用）")
+		return bizerrors.New("pwd: HistoryCheck 配置非法（Count≥1 且 Fetch/Match 非 nil 才启用历史防复用）")
 	}
 	if userID == "" {
-		return fmt.Errorf("pwd: HistoryCheck 的 userID 不能为空")
+		return bizerrors.New("pwd: HistoryCheck 的 userID 不能为空")
 	}
 	history, err := h.Fetch(ctx, userID, h.Count)
 	if err != nil {
-		return fmt.Errorf("pwd: 历史密码查询失败（fail-closed，不放行）: %w", err)
+		return bizerrors.Wrapf(err, "pwd: 历史密码查询失败（fail-closed，不放行）")
 	}
 	for _, stored := range history {
 		hit, err := h.Match(stored, candidate)
 		if err != nil {
-			return fmt.Errorf("pwd: 历史密码比对失败（fail-closed，不放行）: %w", err)
+			return bizerrors.Wrapf(err, "pwd: 历史密码比对失败（fail-closed，不放行）")
 		}
 		if hit {
 			return &Violation{Kind: KindHistory, Message: "新密码与近期使用过的密码重复，请换一个"}

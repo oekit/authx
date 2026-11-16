@@ -11,6 +11,7 @@ import (
 	"github.com/oekit/kitx/jwt"
 	"github.com/oekit/kitx/uidgen"
 	"github.com/oekit/logx"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // log 是本包的懒解析日志器（SDK/基础包规范：Delegating，禁止 Default()）。
@@ -139,7 +140,7 @@ func WithParseOptions(opts ...jwt.ParseOption) FlowOption {
 // 透传到第一次签发/轮换才炸出来毫无收益。
 func NewFlow(m *jwt.Manager, sessions authz.SessionRegistry, rev authz.Revoker, opts ...FlowOption) (*Flow, error) {
 	if m == nil || sessions == nil || rev == nil {
-		return nil, fmt.Errorf("auth: NewFlow 需要非 nil 的 jwt.Manager / SessionRegistry / Revoker")
+		return nil, bizerrors.New("auth: NewFlow 需要非 nil 的 jwt.Manager / SessionRegistry / Revoker")
 	}
 	f := &Flow{
 		jwt:        m,
@@ -152,10 +153,10 @@ func NewFlow(m *jwt.Manager, sessions authz.SessionRegistry, rev authz.Revoker, 
 		opt(f)
 	}
 	if min(f.ttlAccess, f.ttlRefresh) <= 0 {
-		return nil, fmt.Errorf("auth: 双令牌 TTL 必须显式配置为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（jwt #65 同款纪律）", f.ttlAccess, f.ttlRefresh)
+		return nil, bizerrors.Newf("auth: 双令牌 TTL 必须显式配置为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（jwt #65 同款纪律）", f.ttlAccess, f.ttlRefresh)
 	}
 	if f.ttlRefresh < f.ttlAccess {
-		return nil, fmt.Errorf("auth: ttlRefresh(%v) 必须 ≥ ttlAccess(%v)——会话登记/拉黑 TTL 以 refresh 寿命为两令牌寿命的上界", f.ttlRefresh, f.ttlAccess)
+		return nil, bizerrors.Newf("auth: ttlRefresh(%v) 必须 ≥ ttlAccess(%v)——会话登记/拉黑 TTL 以 refresh 寿命为两令牌寿命的上界", f.ttlRefresh, f.ttlAccess)
 	}
 	return f, nil
 }
@@ -167,7 +168,7 @@ func NewFlow(m *jwt.Manager, sessions authz.SessionRegistry, rev authz.Revoker, 
 // 再上抛（宁可失败重试，不放行一对「签了名但不可吊销」的无主令牌）。
 func (f *Flow) IssuePair(ctx context.Context, u *User, meta SessionMeta) (*TokenPair, error) {
 	if u == nil || u.ID == "" {
-		return nil, fmt.Errorf("auth: IssuePair 的用户快照必须带 ID")
+		return nil, bizerrors.New("auth: IssuePair 的用户快照必须带 ID")
 	}
 	return f.issueTail(ctx, u, meta)
 }
@@ -196,7 +197,7 @@ func (f *Flow) IssuePair(ctx context.Context, u *User, meta SessionMeta) (*Token
 // errors.Is）；500 类原样上抛不带 ErrUnauthorized。
 func (f *Flow) RotateRefresh(ctx context.Context, repo UserRepo, refresh string, meta SessionMeta) (*TokenPair, *User, error) {
 	if repo == nil {
-		return nil, nil, fmt.Errorf("auth: RotateRefresh 需要非 nil UserRepo")
+		return nil, nil, bizerrors.New("auth: RotateRefresh 需要非 nil UserRepo")
 	}
 	claims, err := f.jwt.ParseTyped(jwt.TokenRefresh, refresh, slices.Clone(f.parseOpts)...)
 	if err != nil {
@@ -208,12 +209,12 @@ func (f *Flow) RotateRefresh(ctx context.Context, repo UserRepo, refresh string,
 	// 撤销判定（见方法契约第 2 条：用户级命中优先于 token 级，账号级事件
 	// 覆盖重放分型）。
 	if revoked, err := f.revoker.RevokedUser(ctx, claims.Subject, iatOf(claims)); err != nil {
-		return nil, nil, fmt.Errorf("auth: 用户级撤销查询失败: %w", err)
+		return nil, nil, bizerrors.Wrapf(err, "auth: 用户级撤销查询失败")
 	} else if revoked {
 		return nil, nil, fmt.Errorf("%w: 用户级撤销（改密/风控）", ErrUnauthorized)
 	}
 	if revoked, err := authz.RevokedToken(ctx, f.revoker, refresh); err != nil {
-		return nil, nil, fmt.Errorf("auth: 撤销查询失败: %w", err)
+		return nil, nil, bizerrors.Wrapf(err, "auth: 撤销查询失败")
 	} else if revoked {
 		return nil, nil, fmt.Errorf("%w: 旧 refresh 已在撤销黑名单", ErrReplayed)
 	}
@@ -224,27 +225,27 @@ func (f *Flow) RotateRefresh(ctx context.Context, repo UserRepo, refresh string,
 			// 按重放拒绝（fail-closed）。
 			return nil, nil, fmt.Errorf("%w: 会话不在登记表", ErrReplayed)
 		}
-		return nil, nil, fmt.Errorf("auth: 查询会话失败: %w", err)
+		return nil, nil, bizerrors.Wrapf(err, "auth: 查询会话失败")
 	}
 	user, err := repo.GetByID(ctx, claims.Subject)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
 			return nil, nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
 		}
-		return nil, nil, fmt.Errorf("auth: 查询用户失败: %w", err)
+		return nil, nil, bizerrors.Wrapf(err, "auth: 查询用户失败")
 	}
 	if user == nil || user.ID == "" {
-		return nil, nil, fmt.Errorf("auth: GetByID 违约（nil/空 ID 用户）——查无此人请返回 ErrUserNotFound")
+		return nil, nil, bizerrors.New("auth: GetByID 违约（nil/空 ID 用户）——查无此人请返回 ErrUserNotFound")
 	}
 	roles, err := repo.RoleIDs(ctx, user.ID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("auth: 查询角色失败: %w", err)
+		return nil, nil, bizerrors.Wrapf(err, "auth: 查询角色失败")
 	}
 
 	// 原子认领旧会话（防重放拍板点，见方法契约第 5 条）。
 	kicked, err := f.sessions.Kick(ctx, old.ID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("auth: 旧会话下线失败: %w", err)
+		return nil, nil, bizerrors.Wrapf(err, "auth: 旧会话下线失败")
 	}
 	if !kicked {
 		return nil, nil, fmt.Errorf("%w: 旧会话已被并发轮换/强踢认领", ErrReplayed)
@@ -271,10 +272,10 @@ func (f *Flow) Logout(ctx context.Context, access, refresh string) error {
 	var errs []error
 	if s, err := f.sessions.GetByRefreshHash(ctx, authz.TokenHash(refresh)); err != nil {
 		if !errors.Is(err, authz.ErrSessionNotFound) {
-			errs = append(errs, fmt.Errorf("auth: 查询会话失败: %w", err))
+			errs = append(errs, bizerrors.Wrapf(err, "auth: 查询会话失败"))
 		}
 	} else if _, err := f.sessions.Kick(ctx, s.ID); err != nil {
-		errs = append(errs, fmt.Errorf("auth: 会话下线失败: %w", err))
+		errs = append(errs, bizerrors.Wrapf(err, "auth: 会话下线失败"))
 	}
 	errs = append(errs, f.revokePair(ctx, "auth: 登出", access, refresh))
 	return errors.Join(errs...)
@@ -291,17 +292,17 @@ func (f *Flow) Logout(ctx context.Context, access, refresh string) error {
 // at 取改密时刻（pwd.ApplyExpiryOnLogin/改密路径同源）。
 func RevokeUser(ctx context.Context, rev authz.Revoker, sessions authz.SessionRegistry, userID string, at time.Time) error {
 	if rev == nil || sessions == nil {
-		return fmt.Errorf("auth: RevokeUser 需要非 nil Revoker / SessionRegistry")
+		return bizerrors.New("auth: RevokeUser 需要非 nil Revoker / SessionRegistry")
 	}
 	if userID == "" {
-		return fmt.Errorf("auth: RevokeUser 的 userID 不能为空")
+		return bizerrors.New("auth: RevokeUser 的 userID 不能为空")
 	}
 	var errs []error
 	if err := rev.RevokeUser(ctx, userID, at); err != nil {
-		errs = append(errs, fmt.Errorf("auth: 用户级截断失败: %w", err))
+		errs = append(errs, bizerrors.Wrapf(err, "auth: 用户级截断失败"))
 	}
 	if _, err := sessions.KickUser(ctx, userID); err != nil {
-		errs = append(errs, fmt.Errorf("auth: 强踢全会话失败: %w", err))
+		errs = append(errs, bizerrors.Wrapf(err, "auth: 强踢全会话失败"))
 	}
 	return errors.Join(errs...)
 }
@@ -316,15 +317,15 @@ func (f *Flow) RevokeUser(ctx context.Context, userID string, at time.Time) erro
 // 命中即真。查询故障原样上抛（消费侧归 500——不放行、不放大 401）。
 func IsRevoked(ctx context.Context, rev authz.Revoker, token, userID string, iat time.Time) (bool, error) {
 	if rev == nil {
-		return false, fmt.Errorf("auth: IsRevoked 需要非 nil Revoker")
+		return false, bizerrors.New("auth: IsRevoked 需要非 nil Revoker")
 	}
 	if hit, err := rev.Revoked(ctx, authz.TokenHash(token)); err != nil {
-		return false, fmt.Errorf("auth: 撤销查询失败: %w", err)
+		return false, bizerrors.Wrapf(err, "auth: 撤销查询失败")
 	} else if hit {
 		return true, nil
 	}
 	if hit, err := rev.RevokedUser(ctx, userID, iat); err != nil {
-		return false, fmt.Errorf("auth: 用户级撤销查询失败: %w", err)
+		return false, bizerrors.Wrapf(err, "auth: 用户级撤销查询失败")
 	} else if hit {
 		return true, nil
 	}
@@ -374,7 +375,7 @@ func iatOf(claims *jwt.Claims) time.Time {
 // issueTail 签发 + 登记的共享尾段（IssuePair 与 RotateRefresh 同一份时序）。
 func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*TokenPair, error) {
 	if _, ok := u.Claims[f.rolesClaim]; ok {
-		return nil, fmt.Errorf("auth: 用户 Claims 不得占用角色声明键 %q——Roles 字段是角色的唯一入口（#71 同款注入面纪律）", f.rolesClaim)
+		return nil, bizerrors.Newf("auth: 用户 Claims 不得占用角色声明键 %q——Roles 字段是角色的唯一入口（#71 同款注入面纪律）", f.rolesClaim)
 	}
 	opts := make([]jwt.SignOption, 0, len(f.signOpts)+len(u.Claims)+2)
 	opts = append(opts, f.signOpts...)
@@ -386,7 +387,7 @@ func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*Token
 	}
 	access, refresh, err := f.jwt.IssuePair(u.ID, f.ttlAccess, f.ttlRefresh, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("auth: 签发令牌对失败: %w", err)
+		return nil, bizerrors.Wrapf(err, "auth: 签发令牌对失败")
 	}
 	// 回读 refresh 取 jti（Manager.IssuePair 的自动 jti 各自独立，会话登记
 	// 需要 refresh 的 jti 对账；签发产物自证，回读只做提取）。
@@ -400,7 +401,7 @@ func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*Token
 		// WithNoExpiry 而解析未配 WithAllowNoExpiry 等）时必失败，不能让每次
 		// 失败都静默漏出一对无主令牌。
 		revokeErr := f.revokePair(ctx, "auth: 回收无主令牌", access, refresh)
-		return nil, errors.Join(fmt.Errorf("auth: 回读签发产物失败: %w", err), revokeErr)
+		return nil, errors.Join(bizerrors.Wrapf(err, "auth: 回读签发产物失败"), revokeErr)
 	}
 	sid, err := sessionIDGen()
 	if err != nil {
@@ -422,7 +423,7 @@ func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*Token
 		// 签发与登记一次落地（IssuePair 契约）：登记失败回收刚签的双令牌，
 		// 不放行无主（不可强踢）的令牌对。
 		revokeErr := f.revokePair(ctx, "auth: 回收无主令牌", access, refresh)
-		return nil, errors.Join(fmt.Errorf("auth: 会话登记失败: %w", err), revokeErr)
+		return nil, errors.Join(bizerrors.Wrapf(err, "auth: 会话登记失败"), revokeErr)
 	}
 	return &TokenPair{Access: access, Refresh: refresh, Session: sess}, nil
 }
@@ -435,12 +436,12 @@ func (f *Flow) revokePair(ctx context.Context, op, access, refresh string) error
 	var errs []error
 	if access != "" {
 		if err := authz.RevokeToken(ctx, f.revoker, access, f.ttlAccess); err != nil {
-			errs = append(errs, fmt.Errorf("%s: 拉黑 access 失败: %w", op, err))
+			errs = append(errs, bizerrors.Wrapf(err, "%s: 拉黑 access 失败", op))
 		}
 	}
 	if refresh != "" {
 		if err := authz.RevokeToken(ctx, f.revoker, refresh, f.ttlRefresh); err != nil {
-			errs = append(errs, fmt.Errorf("%s: 拉黑 refresh 失败: %w", op, err))
+			errs = append(errs, bizerrors.Wrapf(err, "%s: 拉黑 refresh 失败", op))
 		}
 	}
 	return errors.Join(errs...)
@@ -456,7 +457,7 @@ var sessionIDGen = newSessionID
 func newSessionID() (string, error) {
 	id, err := uidgen.RandomHexE(16)
 	if err != nil {
-		return "", fmt.Errorf("auth: 生成会话 ID 失败（crypto/rand 故障）: %w", err)
+		return "", bizerrors.Wrapf(err, "auth: 生成会话 ID 失败（crypto/rand 故障）")
 	}
 	return id, nil
 }

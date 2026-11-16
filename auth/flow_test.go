@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -210,7 +209,7 @@ type registerFailRegistry struct {
 }
 
 func (r registerFailRegistry) Register(_ context.Context, _ authz.Session, _ time.Duration) error {
-	return fmt.Errorf("登记存储故障")
+	return bizerrors.New("登记存储故障")
 }
 
 // captureRevoker 记录 Revoke 落地次数（黑盒观测回收行为）。
@@ -412,7 +411,7 @@ func TestRotateRefreshErrorTyping(t *testing.T) {
 	}
 
 	// DB 故障 ⇒ 500（错误链保留，不归 401——数据面故障不放大成全站 401）。
-	dbErr := fmt.Errorf("db down")
+	dbErr := bizerrors.New("db down")
 	repo = &fakeRepo{getErr: dbErr}
 	_, _, err = f.RotateRefresh(ctx, repo, pair.Refresh, SessionMeta{})
 	if errors.Is(err, ErrUnauthorized) {
@@ -449,7 +448,7 @@ func (nilUserRepo) TouchLogin(context.Context, string) error { return nil }
 func TestRotateRefreshTouchLoginBestEffort(t *testing.T) {
 	ctx := context.Background()
 	f, _, _, _ := newTestFlow(t)
-	repo := &fakeRepo{user: &User{ID: "u1"}, touchErr: fmt.Errorf("慢查询超时")}
+	repo := &fakeRepo{user: &User{ID: "u1"}, touchErr: bizerrors.New("慢查询超时")}
 
 	pair, _ := f.IssuePair(ctx, &User{ID: "u1"}, SessionMeta{})
 	if _, _, err := f.RotateRefresh(ctx, repo, pair.Refresh, SessionMeta{}); err != nil {
@@ -466,7 +465,7 @@ type kickFailRegistry struct {
 }
 
 func (r kickFailRegistry) Kick(_ context.Context, _ string) (bool, error) {
-	return false, fmt.Errorf("拉黑存储故障")
+	return false, bizerrors.New("拉黑存储故障")
 }
 
 func TestRotateRefreshKickFailure(t *testing.T) {
@@ -533,7 +532,7 @@ type getFailRegistry struct {
 }
 
 func (r getFailRegistry) GetByRefreshHash(_ context.Context, _ string) (authz.Session, error) {
-	return authz.Session{}, fmt.Errorf("登记表故障")
+	return authz.Session{}, bizerrors.New("登记表故障")
 }
 
 func TestLogoutJoinsErrors(t *testing.T) {
@@ -591,7 +590,7 @@ type revokeUserFailRevoker struct {
 }
 
 func (r revokeUserFailRevoker) RevokeUser(_ context.Context, _ string, _ time.Time) error {
-	return fmt.Errorf("截断存储故障")
+	return bizerrors.New("截断存储故障")
 }
 
 func TestRevokeUserJoinsErrors(t *testing.T) {

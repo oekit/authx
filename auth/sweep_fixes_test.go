@@ -4,11 +4,11 @@ package auth
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/oekit/kitx/jwt"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // #154：issueTail 的三条失败路径（回读失败 / 会话 ID 生成失败 / Register 失败）
@@ -67,7 +67,7 @@ func TestIssueTailFailurePathsRevokeIssued(t *testing.T) {
 		// 缝替换的是整个生成器，stub 自带与 newSessionID 相同的错误包装，
 		// 保证断言的是真实路径的消息契约。
 		sessionIDGen = func() (string, error) {
-			return "", fmt.Errorf("auth: 生成会话 ID 失败（crypto/rand 故障）: %w", fmt.Errorf("stub: broken"))
+			return "", bizerrors.Wrapf(bizerrors.New("stub: broken"), "auth: 生成会话 ID 失败（crypto/rand 故障）")
 		}
 		t.Cleanup(func() { sessionIDGen = old })
 		_, err := f.IssuePair(ctx, &User{ID: "u1"}, SessionMeta{})

@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/oekit/kitx/uidgen"
 	"github.com/oekit/logx"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // log 是本包的懒解析日志器（SDK/基础包规范：Delegating，禁止 Default()）。
@@ -88,10 +88,10 @@ func WithStorePrefix(prefix string) StoreRegistryOption {
 // rev/store 任一为 nil 直接报错（无拉黑的强踢是假强踢；无存储的注册表是空壳）。
 func NewStoreRegistry(rev Revoker, store SessionStore, opts ...StoreRegistryOption) (*StoreRegistry, error) {
 	if rev == nil {
-		return nil, fmt.Errorf("authz: NewStoreRegistry 需要非 nil Revoker——Kick/KickUser 的双 hash 拉黑经它落地")
+		return nil, bizerrors.New("authz: NewStoreRegistry 需要非 nil Revoker——Kick/KickUser 的双 hash 拉黑经它落地")
 	}
 	if store == nil {
-		return nil, fmt.Errorf("authz: NewStoreRegistry 需要非 nil SessionStore")
+		return nil, bizerrors.New("authz: NewStoreRegistry 需要非 nil SessionStore")
 	}
 	r := &StoreRegistry{rev: rev, store: store, prefix: defaultStorePrefix}
 	for _, opt := range opts {
@@ -107,17 +107,17 @@ func (r *StoreRegistry) Register(ctx context.Context, s Session, ttl time.Durati
 		return err
 	}
 	if s.ID == "" || s.UserID == "" || s.RefreshHash == "" {
-		return fmt.Errorf("authz: Register 的 ID/UserID/RefreshHash 必填（ID=登记主键、RefreshHash=轮换认领键）")
+		return bizerrors.New("authz: Register 的 ID/UserID/RefreshHash 必填（ID=登记主键、RefreshHash=轮换认领键）")
 	}
 	if ttl <= 0 {
-		return fmt.Errorf("authz: Register 的 ttl 必须为正（got %v）——ttl 是 refresh 剩余寿命，零值透传等于登记长生会话（#65 同款纪律）", ttl)
+		return bizerrors.Newf("authz: Register 的 ttl 必须为正（got %v）——ttl 是 refresh 剩余寿命，零值透传等于登记长生会话（#65 同款纪律）", ttl)
 	}
 	release, acquired, err := r.acquireLock(ctx, r.idLockKey(s.ID))
 	if err != nil {
 		return err
 	}
 	if !acquired {
-		return fmt.Errorf("authz: 会话 ID %q 正在登记/强踢中，请稍后重试", s.ID)
+		return bizerrors.Newf("authz: 会话 ID %q 正在登记/强踢中，请稍后重试", s.ID)
 	}
 	defer release()
 
@@ -127,15 +127,15 @@ func (r *StoreRegistry) Register(ctx context.Context, s Session, ttl time.Durati
 	}
 	payload, err := json.Marshal(storedSession{Session: s, Generation: gen})
 	if err != nil {
-		return fmt.Errorf("authz: 会话序列化失败: %w", err)
+		return bizerrors.Wrapf(err, "authz: 会话序列化失败")
 	}
 	// 主键 SetNX 是「登记不可覆盖」的拍板点（ID 锁之外的第二道原子闸）。
 	ok, err := r.store.SetNX(ctx, r.idKey(s.ID), string(payload), ttl)
 	if err != nil {
-		return fmt.Errorf("authz: 登记会话主键失败: %w", err)
+		return bizerrors.Wrapf(err, "authz: 登记会话主键失败")
 	}
 	if !ok {
-		return fmt.Errorf("authz: 会话 ID %q 已登记——登记不可覆盖，先 Kick 再登记", s.ID)
+		return bizerrors.Newf("authz: 会话 ID %q 已登记——登记不可覆盖，先 Kick 再登记", s.ID)
 	}
 	if err := r.mountRefresh(ctx, s.ID, s.RefreshHash, gen, ttl); err != nil {
 		return errors.Join(err, r.rollbackRegistration(ctx, s))
@@ -143,7 +143,7 @@ func (r *StoreRegistry) Register(ctx context.Context, s Session, ttl time.Durati
 	// 用户索引集合 TTL 只延长不缩短（SAdd 契约）：短寿命会话不得提前抹掉
 	// 同用户的长寿命会话。
 	if err := r.store.SAdd(ctx, r.userKey(s.UserID), s.ID, ttl); err != nil {
-		return errors.Join(fmt.Errorf("authz: 登记用户索引失败: %w", err), r.rollbackRegistration(ctx, s))
+		return errors.Join(bizerrors.Wrapf(err, "authz: 登记用户索引失败"), r.rollbackRegistration(ctx, s))
 	}
 	return nil
 }
@@ -155,14 +155,14 @@ func (r *StoreRegistry) GetByRefreshHash(ctx context.Context, refreshHash string
 	}
 	raw, ok, err := r.store.Get(ctx, r.refreshKey(refreshHash))
 	if err != nil {
-		return Session{}, fmt.Errorf("authz: 查询 refreshHash 索引失败: %w", err)
+		return Session{}, bizerrors.Wrapf(err, "authz: 查询 refreshHash 索引失败")
 	}
 	if !ok {
 		return Session{}, ErrSessionNotFound
 	}
 	mount, err := decodeRefreshMount(raw)
 	if err != nil {
-		return Session{}, fmt.Errorf("authz: refreshHash 索引数据损坏: %w", err)
+		return Session{}, bizerrors.Wrapf(err, "authz: refreshHash 索引数据损坏")
 	}
 	stored, live, err := r.getSession(ctx, mount.ID)
 	if err != nil {
@@ -188,7 +188,7 @@ func (r *StoreRegistry) ListByUser(ctx context.Context, userID string) ([]Sessio
 	}
 	members, err := r.store.SMembers(ctx, r.userKey(userID))
 	if err != nil {
-		return nil, fmt.Errorf("authz: 枚举用户会话索引失败: %w", err)
+		return nil, bizerrors.Wrapf(err, "authz: 枚举用户会话索引失败")
 	}
 	out := make([]Session, 0, len(members))
 	for _, id := range members {
@@ -244,7 +244,7 @@ func (r *StoreRegistry) Kick(ctx context.Context, id string) (bool, error) {
 	remaining, ttlOK, err := r.store.TTL(ctx, r.idKey(id))
 	if err != nil {
 		idRelease()
-		return false, fmt.Errorf("authz: 读取会话剩余寿命失败: %w", err)
+		return false, bizerrors.Wrapf(err, "authz: 读取会话剩余寿命失败")
 	}
 	idRelease()
 	if !ttlOK || remaining <= 0 {
@@ -255,12 +255,12 @@ func (r *StoreRegistry) Kick(ctx context.Context, id string) (bool, error) {
 	var errs []error
 	if stored.Session.AccessHash != "" {
 		if err := r.rev.Revoke(ctx, stored.Session.AccessHash, remaining); err != nil {
-			errs = append(errs, fmt.Errorf("拉黑 access: %w", err))
+			errs = append(errs, bizerrors.Wrapf(err, "拉黑 access"))
 		}
 	}
 	if stored.Session.RefreshHash != "" {
 		if err := r.rev.Revoke(ctx, stored.Session.RefreshHash, remaining); err != nil {
-			errs = append(errs, fmt.Errorf("拉黑 refresh: %w", err))
+			errs = append(errs, bizerrors.Wrapf(err, "拉黑 refresh"))
 		}
 	}
 	if len(errs) > 0 {
@@ -287,7 +287,7 @@ func (r *StoreRegistry) Kick(ctx context.Context, id string) (bool, error) {
 	}
 	deleted, err := r.store.Del(ctx, r.idKey(id))
 	if err != nil {
-		return false, fmt.Errorf("authz: 删除会话主键失败（登记保留，可重试）: %w", err)
+		return false, bizerrors.Wrapf(err, "authz: 删除会话主键失败（登记保留，可重试）")
 	}
 	if !deleted {
 		return false, nil // 重锁后自然过期：按不存在返回
@@ -303,7 +303,7 @@ func (r *StoreRegistry) KickUser(ctx context.Context, userID string) (int, error
 	}
 	members, err := r.store.SMembers(ctx, r.userKey(userID))
 	if err != nil {
-		return 0, fmt.Errorf("authz: 枚举用户会话索引失败: %w", err)
+		return 0, bizerrors.Wrapf(err, "authz: 枚举用户会话索引失败")
 	}
 	count := 0
 	var errs []error
@@ -329,46 +329,46 @@ func (r *StoreRegistry) mountRefresh(ctx context.Context, id, refreshHash, gen s
 		return err
 	}
 	if !acquired {
-		return fmt.Errorf("authz: refreshHash 索引正在变更（挂载/强踢），请稍后重试")
+		return bizerrors.New("authz: refreshHash 索引正在变更（挂载/强踢），请稍后重试")
 	}
 	defer release()
 
 	value, err := encodeRefreshMount(refreshMount{ID: id, Generation: gen})
 	if err != nil {
-		return fmt.Errorf("authz: refreshHash 索引序列化失败: %w", err)
+		return bizerrors.Wrapf(err, "authz: refreshHash 索引序列化失败")
 	}
 	key := r.refreshKey(refreshHash)
 	for attempt := 0; attempt < 2; attempt++ {
 		ok, err := r.store.SetNX(ctx, key, value, ttl)
 		if err != nil {
-			return fmt.Errorf("authz: 挂载 refreshHash 失败: %w", err)
+			return bizerrors.Wrapf(err, "authz: 挂载 refreshHash 失败")
 		}
 		if ok {
 			return nil
 		}
 		raw, exists, err := r.store.Get(ctx, key)
 		if err != nil {
-			return fmt.Errorf("authz: 查询 refreshHash 索引失败: %w", err)
+			return bizerrors.Wrapf(err, "authz: 查询 refreshHash 索引失败")
 		}
 		if exists {
 			cur, err := decodeRefreshMount(raw)
 			if err != nil {
-				return fmt.Errorf("authz: refreshHash 索引数据损坏: %w", err)
+				return bizerrors.Wrapf(err, "authz: refreshHash 索引数据损坏")
 			}
 			stored, live, err := r.getSession(ctx, cur.ID)
 			if err != nil {
 				return err
 			}
 			if live && stored.Generation == cur.Generation {
-				return fmt.Errorf("authz: RefreshHash 已挂在会话 %q 上——同一 refresh 不得挂两枚会话（登记面亦是防重放面）", cur.ID)
+				return bizerrors.Newf("authz: RefreshHash 已挂在会话 %q 上——同一 refresh 不得挂两枚会话（登记面亦是防重放面）", cur.ID)
 			}
 		}
 		// 已过期会话或旧代次残留：清残后重试。
 		if _, err := r.store.Del(ctx, key); err != nil {
-			return fmt.Errorf("authz: 清理过期 refreshHash 索引失败: %w", err)
+			return bizerrors.Wrapf(err, "authz: 清理过期 refreshHash 索引失败")
 		}
 	}
-	return fmt.Errorf("authz: RefreshHash 挂载竞争失败，请重试")
+	return bizerrors.New("authz: RefreshHash 挂载竞争失败，请重试")
 }
 
 // rollbackRegistration 回滚登记失败留下的主键/用户索引（尽力而为，错误聚合）。
@@ -382,10 +382,10 @@ func (r *StoreRegistry) rollbackRegistration(ctx context.Context, s Session) err
 	defer cancel()
 	var errs []error
 	if _, err := r.store.Del(rctx, r.idKey(s.ID)); err != nil {
-		errs = append(errs, fmt.Errorf("回滚会话主键: %w", err))
+		errs = append(errs, bizerrors.Wrapf(err, "回滚会话主键"))
 	}
 	if err := r.store.SRem(rctx, r.userKey(s.UserID), s.ID); err != nil {
-		errs = append(errs, fmt.Errorf("回滚用户索引: %w", err))
+		errs = append(errs, bizerrors.Wrapf(err, "回滚用户索引"))
 	}
 	return errors.Join(errs...)
 }
@@ -443,14 +443,14 @@ func (r *StoreRegistry) cleanupRefreshIndex(ctx context.Context, stored storedSe
 func (r *StoreRegistry) getSession(ctx context.Context, id string) (storedSession, bool, error) {
 	raw, ok, err := r.store.Get(ctx, r.idKey(id))
 	if err != nil {
-		return storedSession{}, false, fmt.Errorf("authz: 读取会话 %q 失败: %w", id, err)
+		return storedSession{}, false, bizerrors.Wrapf(err, "authz: 读取会话 %q 失败", id)
 	}
 	if !ok {
 		return storedSession{}, false, nil
 	}
 	var stored storedSession
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return storedSession{}, false, fmt.Errorf("authz: 会话 %q 数据损坏: %w", id, err)
+		return storedSession{}, false, bizerrors.Wrapf(err, "authz: 会话 %q 数据损坏", id)
 	}
 	return stored, true, nil
 }
@@ -460,7 +460,7 @@ func (r *StoreRegistry) getSession(ctx context.Context, id string) (storedSessio
 func newSessionGeneration() (string, error) {
 	gen, err := uidgen.RandomHexE(16)
 	if err != nil {
-		return "", fmt.Errorf("authz: 生成会话登记代次失败: %w", err)
+		return "", bizerrors.Wrapf(err, "authz: 生成会话登记代次失败")
 	}
 	return gen, nil
 }
@@ -480,7 +480,7 @@ func decodeRefreshMount(raw string) (refreshMount, error) {
 		return refreshMount{}, err
 	}
 	if m.ID == "" || m.Generation == "" {
-		return refreshMount{}, fmt.Errorf("refreshMount 缺 ID/Generation")
+		return refreshMount{}, bizerrors.New("refreshMount 缺 ID/Generation")
 	}
 	return m, nil
 }
@@ -490,7 +490,7 @@ func decodeRefreshMount(raw string) (refreshMount, error) {
 func (r *StoreRegistry) acquireLock(ctx context.Context, key string) (release func(), acquired bool, err error) {
 	ok, err := r.store.SetNX(ctx, key, "1", sessionOpLockTTL)
 	if err != nil {
-		return nil, false, fmt.Errorf("authz: 获取会话操作锁失败: %w", err)
+		return nil, false, bizerrors.Wrapf(err, "authz: 获取会话操作锁失败")
 	}
 	if !ok {
 		return nil, false, nil

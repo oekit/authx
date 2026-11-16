@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oekit/kitx/uidgen"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // TokenTypeClaim 是双令牌对的分型声明名（#97）：Manager 签发的每个令牌都自动
@@ -85,7 +86,7 @@ type Manager struct {
 // 第一次签发/校验才炸出来毫无收益（#96 同款对称检查纪律）。
 func NewManagerRS256(kp *KeyPair) (*Manager, error) {
 	if kp == nil || kp.Private == nil || kp.Public == nil {
-		return nil, fmt.Errorf("RS256 Manager 需要完整密钥对（Private/Public 任一缺失拒绝构造）")
+		return nil, bizerrors.New("RS256 Manager 需要完整密钥对（Private/Public 任一缺失拒绝构造）")
 	}
 	return &Manager{codec: rs256Codec{kp: kp}}, nil
 }
@@ -126,7 +127,7 @@ func (m *Manager) IssuePair(subject string, ttlAccess, ttlRefresh time.Duration,
 	// 透传签出永不过期令牌是最危险的缺省（#65 同款纪律，IssuePair 以 error
 	// 表达）。
 	if min(ttlAccess, ttlRefresh) <= 0 {
-		return "", "", fmt.Errorf("IssuePair 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，IssuePair 以 error 表达）", ttlAccess, ttlRefresh)
+		return "", "", bizerrors.Newf("IssuePair 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，IssuePair 以 error 表达）", ttlAccess, ttlRefresh)
 	}
 	access, err = m.issueTyped(TokenAccess, subject, ttlAccess, opts)
 	if err != nil {
@@ -181,7 +182,7 @@ func (m *Manager) ParseTyped(kind TokenKind, token string, opts ...ParseOption) 
 func (m *Manager) Refresh(refreshToken string, ttlAccess, ttlRefresh time.Duration, onRotate func(old *Claims), opts ...ParseOption) (access, refresh string, err error) {
 	// min 内建（Go 1.21+）与「任一非正即拒」等价（IssuePair 同口径，#65 纪律）。
 	if min(ttlAccess, ttlRefresh) <= 0 {
-		return "", "", fmt.Errorf("Refresh 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，Refresh 以 error 表达）", ttlAccess, ttlRefresh)
+		return "", "", bizerrors.Newf("Refresh 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，Refresh 以 error 表达）", ttlAccess, ttlRefresh)
 	}
 	old, err := m.ParseTyped(TokenRefresh, refreshToken, opts...)
 	if err != nil {
@@ -241,7 +242,7 @@ func (m *Manager) issueTyped(kind TokenKind, subject string, ttl time.Duration, 
 	if !setsJTI(opts) {
 		jti, err := uidgen.RandomHexE(16)
 		if err != nil {
-			return "", fmt.Errorf("生成 jti: %w", err)
+			return "", bizerrors.Wrapf(err, "生成 jti")
 		}
 		all = append(all, WithJTI(jti))
 	}

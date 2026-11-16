@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // randRead 是 crypto/rand.Read 的间接层，仅供测试注入必然失败的桩（#87：运行期
@@ -71,7 +73,7 @@ func RandomHexFrom(r io.Reader, nBytes int) (string, error) {
 	}
 	b := make([]byte, nBytes)
 	if _, err := io.ReadFull(r, b); err != nil {
-		return "", fmt.Errorf("uidgen: 随机源读取失败: %w", err)
+		return "", bizerrors.Wrapf(err, "uidgen: 随机源读取失败")
 	}
 	return hex.EncodeToString(b), nil
 }
@@ -88,7 +90,7 @@ func checkHexArgs(nBytes int) {
 func randomBytes(n int) ([]byte, error) {
 	b := make([]byte, n)
 	if _, err := randRead(b); err != nil {
-		return nil, fmt.Errorf("uidgen: crypto/rand 不可用: %w", err)
+		return nil, bizerrors.Wrapf(err, "uidgen: crypto/rand 不可用")
 	}
 	return b, nil
 }
@@ -131,7 +133,7 @@ func RandomStringE(alphabet string, n int) (string, error) {
 		if errors.Is(err, errSampleStalled) {
 			return "", err
 		}
-		return "", fmt.Errorf("uidgen: crypto/rand 不可用: %w", err)
+		return "", bizerrors.Wrapf(err, "uidgen: crypto/rand 不可用")
 	}
 	return s, nil
 }
@@ -174,7 +176,7 @@ func sampleRunes(read func([]byte) (int, error), runes []rune, n int) (string, e
 		if len(out) == before {
 			stall++
 			if stall >= maxStallRounds {
-				return "", fmt.Errorf("连续 %d 轮读满 %d 字节零产出: %w", stall, len(buf), errSampleStalled)
+				return "", bizerrors.Wrapf(errSampleStalled, "连续 %d 轮读满 %d 字节零产出", stall, len(buf))
 			}
 		} else {
 			stall = 0
@@ -205,7 +207,7 @@ func RandomStringFrom(r io.Reader, alphabet string, n int) (string, error) {
 		if errors.Is(err, errSampleStalled) {
 			return "", err
 		}
-		return "", fmt.Errorf("uidgen: 随机源读取失败: %w", err)
+		return "", bizerrors.Wrapf(err, "uidgen: 随机源读取失败")
 	}
 	return s, nil
 }

@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/oekit/kitx/pwd"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // TokenHash 计算令牌哈希键：sha256(token) 的小写 hex（#119 建议形态）。
@@ -124,10 +124,10 @@ func (m *MemRevoker) Revoke(ctx context.Context, hash string, remaining time.Dur
 		return err
 	}
 	if hash == "" {
-		return fmt.Errorf("authz: Revoke 的 hash 不能为空——键必须出自 TokenHash")
+		return bizerrors.New("authz: Revoke 的 hash 不能为空——键必须出自 TokenHash")
 	}
 	if remaining <= 0 {
-		return fmt.Errorf("authz: Revoke 的 remaining 必须为正（got %v）——已过期令牌无需登记，非正 TTL 是配置零值透传的常见形态（#65 同款纪律）", remaining)
+		return bizerrors.Newf("authz: Revoke 的 remaining 必须为正（got %v）——已过期令牌无需登记，非正 TTL 是配置零值透传的常见形态（#65 同款纪律）", remaining)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -163,10 +163,10 @@ func (m *MemRevoker) RevokeUser(ctx context.Context, userID string, at time.Time
 		return err
 	}
 	if userID == "" {
-		return fmt.Errorf("authz: RevokeUser 的 userID 不能为空")
+		return bizerrors.New("authz: RevokeUser 的 userID 不能为空")
 	}
 	if at.IsZero() {
-		return fmt.Errorf("authz: RevokeUser 的 at 不能是零值——零值截断点判定恒 false，等于一枚令牌都没吊销（#65 同款零值透传纪律）")
+		return bizerrors.New("authz: RevokeUser 的 at 不能是零值——零值截断点判定恒 false，等于一枚令牌都没吊销（#65 同款零值透传纪律）")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

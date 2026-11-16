@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/oekit/logx"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // log 是本包的懒解析日志器（SDK/基础包规范：Delegating，禁止 Default()）。
@@ -114,7 +115,7 @@ func (pv *PlaygroundValidator) RegisterValidation(tag string, fn Func) (err erro
 		if r := recover(); r != nil {
 			// 上游对受限 tag 直接 panic（validator_instance.go）：转成 error
 			// 返回，兑现 error 契约。tag 未注册，后续校验按未知 tag 处理。
-			err = fmt.Errorf("validator: register rule %q: %v", tag, r)
+			err = bizerrors.Newf("validator: register rule %q: %v", tag, r)
 		}
 	}()
 	return pv.validate.RegisterValidation(tag, func(fl validator.FieldLevel) bool {
@@ -141,7 +142,7 @@ func invokeRule(tag string, fn Func, val any) (ok bool) {
 func enginePanicError(op string, r any) error {
 	log.Error("validation engine panicked (isolated)",
 		"op", op, logx.ErrKey, r, "stack", string(debug.Stack()))
-	return fmt.Errorf("validator: %s validation panicked (tag/field-kind mismatch is the usual cause, e.g. min/max/len on bool or struct fields): %v", op, r)
+	return bizerrors.Newf("validator: %s validation panicked (tag/field-kind mismatch is the usual cause, e.g. min/max/len on bool or struct fields): %v", op, r)
 }
 
 // withPanicGuard 把上游校验引擎的 panic 就地转 error（#115 门面闸；#133 收敛

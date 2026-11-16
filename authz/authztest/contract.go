@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/oekit/kitx/authz"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // StoreFactory 返回一份隔离的 SessionStore（每次调用都应是空命名空间）。
@@ -570,7 +571,7 @@ func (f *failingRevoker) Revoke(ctx context.Context, hash string, remaining time
 	bad := f.fail[hash]
 	f.mu.Unlock()
 	if bad {
-		return fmt.Errorf("存储故障(%s)", hash)
+		return bizerrors.Newf("存储故障(%s)", hash)
 	}
 	return f.inner.Revoke(ctx, hash, remaining)
 }
