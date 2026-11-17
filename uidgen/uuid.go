@@ -1,23 +1,18 @@
 package uidgen
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"strings"
+
+	"github.com/oekit/pkg/stringx"
 )
 
 // newV4 生成 RFC 4122 v4 UUID 的规范形式（小写、连字符分隔）。
-// 16 字节 crypto/rand：第 7 字节高 4 位置版本号 4，第 9 字节高 2 位置
-// variant 10，输出语义与 google/uuid 的 New().String() 逐字节一致。
+// 委托 pkg/stringx.UUIDv4() 全矩阵单源（#531，#528 消费方迁移）：16 字节
+// crypto/rand、第 7 字节高 4 位置版本号 4、第 9 字节高 2 位置 variant 10、
+// 8-4-4-4-12 连字符格式，输出与原手写实现逐字节一致（对拍 1000 例通过）。
+// 随机源失败 panic 语义不变（pkg 侧同为 panic；panic 消息文案归 pkg）。
 func newV4() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic("uidgen: crypto/rand 不可用: " + err.Error())
-	}
-	b[6] = (b[6] & 0x0f) | 0x40 // version 4
-	b[8] = (b[8] & 0x3f) | 0x80 // variant 10xx
-	s := hex.EncodeToString(b[:])
-	return s[0:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:32]
+	return stringx.UUIDv4()
 }
 
 // UUID 返回一个不带连字符的 UUID 字符串。
