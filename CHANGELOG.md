@@ -1,3 +1,9 @@
+## [v0.11.0] — 2026-11-18
+
+- validator panic 转译走 Recovered、Unwrap 缓存载体+新增 ErrValidation 哨兵(#208);authz MemSessionStore/MemRevoker TTL 骨架单源包内 ttlmap(#209);uidgen newV4 委托 pkg/stringx.UUIDv4 单源;TokenHash 收敛 encoding.Sha256Hex
+
+关联问题单：kitx#208、kitx#209。
+
 ## [v0.10.1] — 2026-11-16
 
 - refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
