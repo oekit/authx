@@ -2,6 +2,7 @@ package validator
 
 import (
 	stderrors "errors"
+	"fmt"
 	"testing"
 
 	bizerrors "github.com/oekit/pkg/errors"
@@ -54,6 +55,54 @@ func TestValidationError_Unwrap_Nested(t *testing.T) {
 	}
 	if be.BizCode != 400 {
 		t.Errorf("expected BizCode=400, got %d", be.BizCode)
+	}
+}
+
+// #208：Unwrap 载体缓存——同一错误值反复 Unwrap 返回同一实例（此前每次
+// 现场 new，身份永不稳定），且 errors.Is 对包级载体 ErrValidation 可判定
+// （经 Is 桥接）；errors.As 仍取到携带真实字段消息的载体（mw.Fail 响应体
+// message 保真口径）。
+func TestValidationError_Unwrap_CachedCarrier(t *testing.T) {
+	ve := NewFieldValidationError([]FieldError{{Field: "name", Message: "name is required"}})
+	first := ve.Unwrap()
+	if first != ve.Unwrap() {
+		t.Fatal("同一错误值反复 Unwrap 必须返回同一实例（sync.Once 缓存载体）")
+	}
+	if !stderrors.Is(ve, ErrValidation) {
+		t.Fatal("errors.Is(err, ErrValidation) 必须命中包级缓存载体（#208 此前对任何 BizError 实例永不匹配）")
+	}
+	// 包装链上同样可判定（%w 包装与 Join 两条链式路径）。
+	if !stderrors.Is(fmt.Errorf("wrapped: %w", ve), ErrValidation) {
+		t.Fatal("包装后的 ValidationError 经 Unwrap 链仍须命中包级载体")
+	}
+	if !stderrors.Is(stderrors.Join(stderrors.New("ctx"), ve), ErrValidation) {
+		t.Fatal("Join 链上的 ValidationError 亦须命中包级载体")
+	}
+	if stderrors.Is(ve, ErrNilValidationFunc) {
+		t.Fatal("无关哨兵不得误判")
+	}
+	var be *bizerrors.BizError
+	if !stderrors.As(ve, &be) {
+		t.Fatal("errors.As 仍须命中 BizError 载体")
+	}
+	if be.BizCode != 400 || be.HTTPCode != 400 {
+		t.Fatalf("codes = (%d, %d), want (400, 400)", be.BizCode, be.HTTPCode)
+	}
+	if be.Message != "name is required" {
+		t.Fatalf("载体 message = %q, want 首条字段消息保真（mw.Fail 响应体口径）", be.Message)
+	}
+	// 直接构造（不经 NewFieldValidationError）同口径：零值 sync.Once 可用。
+	literal := &ValidationError{errors: []FieldError{{Field: "x", Message: "x bad"}}}
+	if literal.Unwrap() != literal.Unwrap() {
+		t.Fatal("直接构造的错误值 Unwrap 亦须缓存")
+	}
+	if !stderrors.Is(literal, ErrValidation) {
+		t.Fatal("直接构造的错误值 errors.Is 亦须命中包级载体")
+	}
+	// 空错误列表：载体 message 退到 "validation failed" 兜底文案（与 Error() 一致）。
+	empty := &ValidationError{}
+	if emptyBe, ok := empty.Unwrap().(*bizerrors.BizError); !ok || emptyBe.Message != "validation failed" {
+		t.Fatalf("empty 载体 message = %v, want \"validation failed\"", empty.Unwrap())
 	}
 }
 

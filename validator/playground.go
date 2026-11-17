@@ -115,7 +115,10 @@ func (pv *PlaygroundValidator) RegisterValidation(tag string, fn Func) (err erro
 		if r := recover(); r != nil {
 			// 上游对受限 tag 直接 panic（validator_instance.go）：转成 error
 			// 返回，兑现 error 契约。tag 未注册，后续校验按未知 tag 处理。
-			err = bizerrors.Newf("validator: register rule %q: %v", tag, r)
+			// #208：panic 值统一走 Recovered 收编（#381 纪律）——此前 %v 把
+			// panic 值拍平成纯文本，error 身份（panic(err) 时 errors.Is/As
+			// 可判定）当场丢失且栈不在场；Wrapf 以 %w 挂链两者都保住。
+			err = bizerrors.Wrapf(bizerrors.Recovered(r), "validator: register rule %q", tag)
 		}
 	}()
 	return pv.validate.RegisterValidation(tag, func(fl validator.FieldLevel) bool {
@@ -139,10 +142,13 @@ func invokeRule(tag string, fn Func, val any) (ok bool) {
 // enginePanicError 校验路径 panic 的统一转译（#115，与 invokeRule 同款可观测
 // 形态）：记 ERROR 日志（带 stack）并转成携带入口定位的 error——上游 panic 值
 // （如 "Bad field type bool"）随消息带出，排障一眼可见是 tag 误用而非请求问题。
+// #208：panic 值统一走 Recovered 收编（#381 纪律）——*PanicError 保留 error
+// 身份（panic(err) 时 errors.Is/As 可穿透到原始错误）、栈与 panic 值类型信息；
+// 消息形态（"validation panicked"）以现有测试为准保持不变。
 func enginePanicError(op string, r any) error {
 	log.Error("validation engine panicked (isolated)",
 		"op", op, logx.ErrKey, r, "stack", string(debug.Stack()))
-	return bizerrors.Newf("validator: %s validation panicked (tag/field-kind mismatch is the usual cause, e.g. min/max/len on bool or struct fields): %v", op, r)
+	return bizerrors.Wrapf(bizerrors.Recovered(r), "validator: %s validation panicked (tag/field-kind mismatch is the usual cause, e.g. min/max/len on bool or struct fields)", op)
 }
 
 // withPanicGuard 把上游校验引擎的 panic 就地转 error（#115 门面闸；#133 收敛

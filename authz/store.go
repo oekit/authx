@@ -60,28 +60,24 @@ type SessionStore interface {
 	TTL(ctx context.Context, key string) (time.Duration, bool, error)
 }
 
-// memStoreValue 是内存 store 的键值项（string 值 + 到期时刻）。
-type memStoreValue struct {
-	value     string
-	expiresAt time.Time
-}
-
-// memStoreSet 是内存 store 的集合项（成员集 + 到期时刻）。
+// memStoreSet 是内存 store 的集合项（成员集；集合的失效时刻由 ttlmap 条目
+// 承载，#209 TTL 骨架单源）。
 type memStoreSet struct {
-	members   map[string]struct{}
-	expiresAt time.Time
+	members map[string]struct{}
 }
 
 // MemSessionStore 是 SessionStore 的内存参考实现：并发安全（mutex 保护），
 // 零第三方依赖，可作 StoreRegistry 的单实例/multi-instance 测试替身。
 //
 // 过期语义：读路径惰性出清（过期键视作不存在），Sweep 可手动回收；不启动
-// 后台 goroutine（本仓禁止裸 go func）。
+// 后台 goroutine（本仓禁止裸 go func）。TTL 骨架（键→失效时刻 + 惰性过期 +
+// Sweep + 时钟防呆）单源在包内 ttlmap（#209）——kv 与 sets 两张表共用一份
+// 实现，时钟取构造注入的 m.now（与 ttlmap 内部判定同一时钟源，构造后不可变）。
 type MemSessionStore struct {
 	mu   sync.Mutex
 	now  func() time.Time
-	kv   map[string]memStoreValue
-	sets map[string]*memStoreSet
+	kv   *ttlmap[string]       // 主键值表（string 载体）
+	sets *ttlmap[*memStoreSet] // 用户会话索引（集合键，指针载荷原地改成员）
 }
 
 var _ SessionStore = (*MemSessionStore)(nil)
@@ -102,14 +98,12 @@ func WithSessionStoreClock(f func() time.Time) MemSessionStoreOption {
 
 // NewMemSessionStore 构造内存 SessionStore（缺省时钟 time.Now）。
 func NewMemSessionStore(opts ...MemSessionStoreOption) *MemSessionStore {
-	m := &MemSessionStore{
-		now:  time.Now,
-		kv:   make(map[string]memStoreValue),
-		sets: make(map[string]*memStoreSet),
-	}
+	m := &MemSessionStore{now: time.Now}
 	for _, opt := range opts {
 		opt(m)
 	}
+	m.kv = newTTLMap[string](m.now)
+	m.sets = newTTLMap[*memStoreSet](m.now)
 	return m
 }
 
@@ -120,11 +114,11 @@ func (m *MemSessionStore) Get(ctx context.Context, key string) (string, bool, er
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	v, ok := m.getLocked(key)
+	value, ok := m.kv.get(key)
 	if !ok {
 		return "", false, nil
 	}
-	return v.value, true, nil
+	return value, true, nil
 }
 
 // SetNX 原子写入（契约见 SessionStore）。
@@ -137,10 +131,10 @@ func (m *MemSessionStore) SetNX(ctx context.Context, key, value string, ttl time
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.getLocked(key); ok {
+	if _, ok := m.kv.get(key); ok {
 		return false, nil
 	}
-	m.kv[key] = memStoreValue{value: value, expiresAt: m.now().Add(ttl)}
+	m.kv.set(key, value, m.now().Add(ttl))
 	return true, nil
 }
 
@@ -151,14 +145,13 @@ func (m *MemSessionStore) Del(ctx context.Context, key string) (bool, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now()
 	found := false
-	if _, ok := m.getLocked(key); ok {
-		delete(m.kv, key)
+	if _, ok := m.kv.get(key); ok {
+		m.kv.remove(key)
 		found = true
 	}
-	if _, ok := m.getSetLocked(key, now); ok {
-		delete(m.sets, key)
+	if _, ok := m.sets.get(key); ok {
+		m.sets.remove(key)
 		found = true
 	}
 	return found, nil
@@ -175,15 +168,14 @@ func (m *MemSessionStore) SAdd(ctx context.Context, key, member string, ttl time
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	set, ok := m.getSetLocked(key, now)
+	set, ok := m.sets.get(key)
 	if !ok {
 		set = &memStoreSet{members: make(map[string]struct{})}
-		m.sets[key] = set
+		m.sets.set(key, set, now.Add(ttl))
+	} else {
+		m.sets.extend(key, now.Add(ttl))
 	}
 	set.members[member] = struct{}{}
-	if expiresAt := now.Add(ttl); set.expiresAt.Before(expiresAt) {
-		set.expiresAt = expiresAt
-	}
 	return nil
 }
 
@@ -194,13 +186,13 @@ func (m *MemSessionStore) SRem(ctx context.Context, key, member string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	set, ok := m.getSetLocked(key, m.now())
+	set, ok := m.sets.get(key)
 	if !ok {
 		return nil
 	}
 	delete(set.members, member)
 	if len(set.members) == 0 {
-		delete(m.sets, key)
+		m.sets.remove(key)
 	}
 	return nil
 }
@@ -212,7 +204,7 @@ func (m *MemSessionStore) SMembers(ctx context.Context, key string) ([]string, e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	set, ok := m.getSetLocked(key, m.now())
+	set, ok := m.sets.get(key)
 	if !ok {
 		return []string{}, nil
 	}
@@ -233,14 +225,11 @@ func (m *MemSessionStore) Expire(ctx context.Context, key string, ttl time.Durat
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now()
-	if v, ok := m.getLocked(key); ok {
-		v.expiresAt = now.Add(ttl)
-		m.kv[key] = v
+	expiresAt := m.now().Add(ttl)
+	if m.kv.expire(key, expiresAt) {
 		return true, nil
 	}
-	if set, ok := m.getSetLocked(key, now); ok {
-		set.expiresAt = now.Add(ttl)
+	if m.sets.expire(key, expiresAt) {
 		return true, nil
 	}
 	return false, nil
@@ -253,12 +242,11 @@ func (m *MemSessionStore) TTL(ctx context.Context, key string) (time.Duration, b
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now()
-	if v, ok := m.getLocked(key); ok {
-		return v.expiresAt.Sub(now), true, nil
+	if remaining, ok := m.kv.ttl(key); ok {
+		return remaining, true, nil
 	}
-	if set, ok := m.getSetLocked(key, now); ok {
-		return set.expiresAt.Sub(now), true, nil
+	if remaining, ok := m.sets.ttl(key); ok {
+		return remaining, true, nil
 	}
 	return 0, false, nil
 }
@@ -268,41 +256,6 @@ func (m *MemSessionStore) TTL(ctx context.Context, key string) (time.Duration, b
 func (m *MemSessionStore) Sweep() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now()
-	for key, v := range m.kv {
-		if !now.Before(v.expiresAt) {
-			delete(m.kv, key)
-		}
-	}
-	for key, set := range m.sets {
-		if !now.Before(set.expiresAt) {
-			delete(m.sets, key)
-		}
-	}
-}
-
-// getLocked 取键值并惰性出清过期项（调用方持锁）。
-func (m *MemSessionStore) getLocked(key string) (memStoreValue, bool) {
-	v, ok := m.kv[key]
-	if !ok {
-		return memStoreValue{}, false
-	}
-	if !m.now().Before(v.expiresAt) {
-		delete(m.kv, key)
-		return memStoreValue{}, false
-	}
-	return v, true
-}
-
-// getSetLocked 取集合并惰性出清过期项（调用方持锁）。
-func (m *MemSessionStore) getSetLocked(key string, now time.Time) (*memStoreSet, bool) {
-	set, ok := m.sets[key]
-	if !ok {
-		return nil, false
-	}
-	if !now.Before(set.expiresAt) {
-		delete(m.sets, key)
-		return nil, false
-	}
-	return set, true
+	m.kv.sweep()
+	m.sets.sweep()
 }
