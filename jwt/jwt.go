@@ -140,13 +140,16 @@ func WithNoExpiry() SignOption { return func(o *signOptions) { o.noExpiry = true
 func WithNotBefore(t time.Time) SignOption { return func(o *signOptions) { o.notBefore = &t } }
 
 // WithNow 注入签发时钟：iat = now()、exp = iat + ttl 同钟源（nbf 仍取
-// WithNotBefore 的绝对时刻）。缺省 time.Now（#64：缺省行为不变）；f 为 nil
-// 直接 panic——静默回落真实时钟会让 iat 无声漂移。测试可注入假时钟获得
-// 确定性令牌，不再只能断言 iat≈now 的区间。
+// WithNotBefore 的绝对时刻）。缺省 time.Now（#64：缺省行为不变）。f 为 nil
+// 按仓规 Option 总则②显式回退默认签发时钟（不把 nil 存进选项），与
+// pkg/cache/pkg/webhook 的 WithClock(nil) 口径统一（#538）。测试可注入假时钟
+// 获得确定性令牌，不再只能断言 iat≈now 的区间。
+//
+// 行为变更（#538）：此前 WithNow(nil) 在选项应用时 panic，现按默认时钟正常签发。
 func WithNow(f func() time.Time) SignOption {
 	return func(o *signOptions) {
 		if f == nil {
-			panic("jwt: WithNow 的时钟函数不能为 nil——静默回落 time.Now() 会让 iat 无声漂移（#64）")
+			return
 		}
 		o.nowFn = f
 	}

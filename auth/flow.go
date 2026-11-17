@@ -111,12 +111,16 @@ func WithRolesClaim(key string) FlowOption {
 	}
 }
 
-// WithClock 注入 Flow 时钟（会话 LoginAt；f 为 nil 直接 panic，jwt.WithNow
-// 同款纪律）。签发时钟（iat/exp）经 WithSignOptions 传 jwt.WithNow/WithIssuedAt。
+// WithClock 注入 Flow 时钟（会话 LoginAt；缺省 time.Now）。f 为 nil 按仓规
+// Option 总则②显式回退默认时钟（不把 nil 存进实例），与 pkg/cache/pkg/webhook
+// 的 WithClock(nil) 口径统一（#538）。签发时钟（iat/exp）经 WithSignOptions
+// 传 jwt.WithNow/WithIssuedAt。
+//
+// 行为变更（#538）：此前 WithClock(nil) 在构造期 panic，现按默认时钟正常构造。
 func WithClock(f func() time.Time) FlowOption {
 	return func(fl *Flow) {
 		if f == nil {
-			panic("auth: WithClock 的时钟函数不能为 nil——静默回落 time.Now() 会让时钟无声漂移")
+			return
 		}
 		fl.now = f
 	}

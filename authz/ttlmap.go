@@ -21,9 +21,10 @@ import "time"
 // 供 RWMutex 读锁路径（MemRevoker.Revoked）使用；Sweep 交给部署形态手动
 // 触发（pkg/cache NoBackgroundSweep 同款哲学）。
 //
-// 时间口径：条目「存活」当且仅当 now < expiresAt（到点即亡）。时钟构造注入，
-// nil 直接 panic（静默回落 time.Now() 会让 TTL 无声漂移）——
-// WithRevokerClock / WithSessionStoreClock 的 nil 防呆与本防呆同源。
+// 时间口径：条目「存活」当且仅当 now < expiresAt（到点即亡）。时钟构造注入；
+// nil fail-fast 是包内不变量防呆（各构造函数在应用 Option 前已把时钟缺省为
+// time.Now，Option 层 nil 回退默认见 WithRevokerClock/WithSessionStoreClock
+// 的 #538 口径——正常路径到不了这里）。
 type ttlmap[V any] struct {
 	m   map[string]ttlEntry[V]
 	now func() time.Time
@@ -35,10 +36,10 @@ type ttlEntry[V any] struct {
 	expiresAt time.Time
 }
 
-// newTTLMap 构造 ttlmap（时钟必须注入，nil fail-fast）。
+// newTTLMap 构造 ttlmap（时钟必须注入；nil 是包内编程错误，fail-fast）。
 func newTTLMap[V any](now func() time.Time) *ttlmap[V] {
 	if now == nil {
-		panic("authz: ttlmap 的时钟函数不能为 nil——静默回落 time.Now() 会让 TTL 无声漂移")
+		panic("authz: ttlmap 收到 nil 时钟——各构造函数必须先缺省 time.Now 再注入（#538 后 Option 层 nil 已回退默认，正常路径到不了这里）")
 	}
 	return &ttlmap[V]{m: make(map[string]ttlEntry[V]), now: now}
 }

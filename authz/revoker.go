@@ -97,12 +97,16 @@ type MemRevoker struct {
 // MemRevokerOption 是 NewMemRevoker 的函数选项。
 type MemRevokerOption func(*MemRevoker)
 
-// WithRevokerClock 注入 MemRevoker 时钟（测试确定性 TTL 边界；f 为 nil 直接
-// panic——静默回落 time.Now() 会让时钟无声漂移，WithNow（#64）同款纪律）。
+// WithRevokerClock 注入 MemRevoker 时钟（测试确定性 TTL 边界；缺省 time.Now）。
+// f 为 nil 按仓规 Option 总则②显式回退默认时钟（不把 nil 存进实例），与
+// pkg/cache/pkg/webhook 的 WithClock(nil) 口径统一（#538）。
+//
+// 行为变更（#538）：此前 WithRevokerClock(nil) 在构造期 panic，现按默认时钟
+// 正常构造。
 func WithRevokerClock(f func() time.Time) MemRevokerOption {
 	return func(m *MemRevoker) {
 		if f == nil {
-			panic("authz: WithRevokerClock 的时钟函数不能为 nil——静默回落 time.Now() 会让时钟无声漂移")
+			return
 		}
 		m.now = f
 	}

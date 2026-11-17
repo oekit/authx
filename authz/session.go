@@ -93,12 +93,17 @@ var _ SessionRegistry = (*MemRegistry)(nil)
 // MemRegistryOption 是 NewMemRegistry 的函数选项。
 type MemRegistryOption func(*MemRegistry)
 
-// WithRegistryClock 注入 MemRegistry 时钟（f 为 nil 直接 panic，WithRevokerClock
-// 同款纪律）。时钟同时用于内存 store 的 TTL 判定。
+// WithRegistryClock 注入 MemRegistry 时钟（缺省 time.Now；时钟同时用于内存
+// store 的 TTL 判定）。f 为 nil 按仓规 Option 总则②显式回退默认时钟（不把
+// nil 存进实例），与 pkg/cache/pkg/webhook 的 WithClock(nil) 口径统一（#538，
+// WithRevokerClock/WithSessionStoreClock 同批）。
+//
+// 行为变更（#538）：此前 WithRegistryClock(nil) 在构造期 panic，现按默认时钟
+// 正常构造。
 func WithRegistryClock(f func() time.Time) MemRegistryOption {
 	return func(m *MemRegistry) {
 		if f == nil {
-			panic("authz: WithRegistryClock 的时钟函数不能为 nil——静默回落 time.Now() 会让时钟无声漂移")
+			return
 		}
 		m.now = f
 	}

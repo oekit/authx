@@ -429,8 +429,10 @@ func TestMemRegistrySweep(t *testing.T) {
 	}
 }
 
-// 构造防呆：nil Revoker panic（无拉黑的强踢是假强踢）；nil 时钟 panic。
-func TestMemRegistryConstructionPanics(t *testing.T) {
+// 构造防呆：nil Revoker panic（无拉黑的强踢是假强踢）。#538：WithRegistryClock(nil)
+// 不再 panic——按 Option 总则②显式回退默认时钟（time.Now，区间断言），与
+// pkg/cache/pkg/webhook 同口径。
+func TestMemRegistryConstruction(t *testing.T) {
 	func() {
 		defer func() {
 			if recover() == nil {
@@ -439,14 +441,25 @@ func TestMemRegistryConstructionPanics(t *testing.T) {
 		}()
 		_ = NewMemRegistry(nil)
 	}()
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("WithRegistryClock(nil) 必须 panic")
-			}
-		}()
-		_ = NewMemRegistry(NewMemRevoker(), WithRegistryClock(nil))
-	}()
+	before := time.Now()
+	reg := NewMemRegistry(NewMemRevoker(), WithRegistryClock(nil))
+	got := reg.now() // nil 若被存进实例，此处即为 nil 调用 panic——回退本身也被钉住
+	after := time.Now()
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("WithRegistryClock(nil) 未回退默认时钟 time.Now：got %v, want within [%v, %v]", got, before, after)
+	}
+}
+
+// #538：WithSessionStoreClock(nil) 不再 panic——按 Option 总则②显式回退默认
+// 时钟（time.Now，区间断言；假时钟注入路径由上方时钟驱动的 TTL 场景钉住）。
+func TestMemSessionStoreClockOptionNilFallback(t *testing.T) {
+	before := time.Now()
+	s := NewMemSessionStore(WithSessionStoreClock(nil))
+	got := s.now() // nil 若被存进实例，此处即为 nil 调用 panic——回退本身也被钉住
+	after := time.Now()
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("WithSessionStoreClock(nil) 未回退默认时钟 time.Now：got %v, want within [%v, %v]", got, before, after)
+	}
 }
 
 // ids 提取会话 ID 列表（断言可读性）。
