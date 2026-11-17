@@ -84,11 +84,13 @@ func RevokedToken(ctx context.Context, r Revoker, token string) (bool, error) {
 //
 // 生命周期：不启动后台 goroutine（本仓禁止裸 go func）。token 级条目过期后
 // 读判即视为不在；写路径不自动清扫，Sweep 可手动回收过期条目（pkg/cache
-// NoBackgroundSweep 同款哲学：清扫时机交给部署形态）。
+// NoBackgroundSweep 同款哲学：清扫时机交给部署形态）。TTL 骨架（键→失效
+// 时刻 + 惰性过期 + Sweep + 时钟防呆）单源在包内 ttlmap（#209），hashes 表
+// 的时钟与 m.now 同源（构造期注入，之后不可变）。
 type MemRevoker struct {
 	mu     sync.RWMutex
-	hashes map[string]time.Time // hash → 失效时刻（now+remaining）
-	users  map[string]time.Time // userID → 用户级截断点（单调不回退）
+	hashes *ttlmap[struct{}]    // token 级黑名单（条目失效时刻=登记时 now+remaining，#209 TTL 骨架单源）
+	users  map[string]time.Time // userID → 用户级截断点（单调不回退，无 TTL）
 	now    func() time.Time
 }
 
@@ -109,13 +111,13 @@ func WithRevokerClock(f func() time.Time) MemRevokerOption {
 // NewMemRevoker 构造内存撤销黑名单（缺省时钟 time.Now）。
 func NewMemRevoker(opts ...MemRevokerOption) *MemRevoker {
 	m := &MemRevoker{
-		hashes: make(map[string]time.Time),
-		users:  make(map[string]time.Time),
-		now:    time.Now,
+		now:   time.Now,
+		users: make(map[string]time.Time),
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
+	m.hashes = newTTLMap[struct{}](m.now)
 	return m
 }
 
@@ -132,22 +134,20 @@ func (m *MemRevoker) Revoke(ctx context.Context, hash string, remaining time.Dur
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.hashes[hash] = m.now().Add(remaining)
+	m.hashes.set(hash, struct{}{}, m.now().Add(remaining))
 	return nil
 }
 
-// Revoked 判定 token 级撤销（过期条目视为不在）。
+// Revoked 判定 token 级撤销（过期条目视为不在）。读路径不回删（RWMutex
+// 读锁；物理回收交给 Sweep）。
 func (m *MemRevoker) Revoked(ctx context.Context, hash string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	exp, ok := m.hashes[hash]
-	if !ok {
-		return false, nil
-	}
-	return m.now().Before(exp), nil
+	_, live := m.hashes.peek(hash)
+	return live, nil
 }
 
 // RevokeUser 设置用户级截断点（单调不回退，取既有值与 at 的较大者——回退
@@ -200,10 +200,5 @@ func (m *MemRevoker) RevokedUser(ctx context.Context, userID string, iat time.Ti
 func (m *MemRevoker) Sweep() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now()
-	for k, exp := range m.hashes {
-		if !now.Before(exp) {
-			delete(m.hashes, k)
-		}
-	}
+	m.hashes.sweep()
 }

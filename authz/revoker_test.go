@@ -185,8 +185,8 @@ func TestMemRevokerSweep(t *testing.T) {
 	r.Sweep()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if len(r.hashes) != 0 {
-		t.Fatalf("Sweep 后过期条目残留 %d 条", len(r.hashes))
+	if r.hashes.len() != 0 {
+		t.Fatalf("Sweep 后过期条目残留 %d 条", r.hashes.len())
 	}
 	if len(r.users) != 1 {
 		t.Fatalf("用户级截断点不应被 Sweep 回收，剩 %d 条", len(r.users))

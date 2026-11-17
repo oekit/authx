@@ -423,9 +423,9 @@ func TestMemRegistrySweep(t *testing.T) {
 	reg.Sweep()
 	reg.store.mu.Lock()
 	defer reg.store.mu.Unlock()
-	if len(reg.store.kv) != 0 || len(reg.store.sets) != 0 {
+	if reg.store.kv.len() != 0 || reg.store.sets.len() != 0 {
 		t.Fatalf("Sweep 后残留：kv=%d sets=%d（主键/索引/操作锁均应过期出清）",
-			len(reg.store.kv), len(reg.store.sets))
+			reg.store.kv.len(), reg.store.sets.len())
 	}
 }
 
