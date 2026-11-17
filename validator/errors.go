@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	bizerrors "github.com/oekit/pkg/errors"
 )
@@ -20,10 +21,25 @@ var ErrNilValidationFunc = errors.New("validator: validation func must not be ni
 // 如需自定义消息请扩展 formatMessageNamed 或实现自定义 Validator。
 var ErrTranslationNotSupported = errors.New("validator: translation not supported; messages are built-in via formatMessageNamed")
 
+// ErrValidation 是 ValidationError 的包级缓存 BizError 载体（BizCode=400,
+// HTTPCode=400）：errors.Is(err, ErrValidation) 判定「校验失败类业务错误」
+// 的单点入口（#208）。此前 Unwrap 每次现场 new BizError，errors.Is 对任何
+// 具体 BizError 实例永不匹配——包级缓存载体给了调用方可引用的判定目标。
+//
+// 本载体只承担身份判定，message 是兜底文案；响应语义以 Unwrap 链上携带
+// 真实字段消息的载体为准（见 ValidationError.Unwrap）。
+var ErrValidation = bizerrors.NewBizErrorWithStatus(400, 400, "validation failed")
+
 // ValidationError 包含多个字段验证错误。
 // 实现 BizError 接口（code=400），handler 层的 Fail 会自动识别为 400 Bad Request。
 type ValidationError struct {
 	errors []FieldError
+
+	// bizOnce/bizErr 缓存 Unwrap 载体（#208）：sync.Once 零值即可用（直接
+	// 构造 &ValidationError{} 的路径同样生效），同一错误值反复 Unwrap 返回
+	// 同一实例——errors.Is 对该实例的判定从此稳定。
+	bizOnce sync.Once
+	bizErr  *bizerrors.BizError
 }
 
 // FieldError 表示单个字段的验证错误。
@@ -42,10 +58,30 @@ func (e *ValidationError) Error() string {
 	return e.errors[0].Message
 }
 
-// Unwrap 返回底层的 BizError（BizCode=400, HTTPCode=400），使 errors.As 能识别为 BizError。
-// 这样 handler 层的 Fail 会自动返回 400 Bad Request，而非 500。
+// Unwrap 返回本错误值缓存的 BizError 载体（BizCode=400, HTTPCode=400），使
+// errors.As 能识别为 BizError——这样 handler 层的 Fail 会自动返回 400 Bad
+// Request，而非 500。
+//
+// #208：载体经 sync.Once 构造一次并缓存于错误值自身（同一错误值反复 Unwrap
+// 返回同一实例），不再是每次现场 new——此前每次身份都不同，errors.Is 对任何
+// 具体 BizError 实例永不匹配。message 保真仍取首条字段消息：middleware.Fail
+// 响应体直接渲染 BizError.Message，换成包级静态文案会让 API 消费方丢掉
+// 「哪个字段为什么没过」；errors.Is(err, ErrValidation) 的身份判定由 Is 桥接
+// 到包级缓存载体。
 func (e *ValidationError) Unwrap() error {
-	return bizerrors.NewBizErrorWithStatus(400, 400, e.Error())
+	e.bizOnce.Do(func() {
+		e.bizErr = bizerrors.NewBizErrorWithStatus(400, 400, e.Error())
+	})
+	return e.bizErr
+}
+
+// Is 把包级缓存载体 ErrValidation 桥接进 errors.Is 的判定（#208）：errors.Is
+// 对链上每个错误先做相等比较、再询问本方法——无需把载体挂进 Unwrap 链
+// （挂链会让 middleware.Fail 的 cause 落日志把每个 400 判成 error noise，
+// 也会让响应 message 退化为静态文案）。仅恒等匹配 ErrValidation；其余目标
+// （含其它 400 码 BizError 实例）一律 false，不放大判定语义。
+func (e *ValidationError) Is(target error) bool {
+	return target == ErrValidation
 }
 
 // Errors 返回所有字段错误（副本，#116）：返回值与内部存储不共享底层数组——

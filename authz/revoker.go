@@ -2,12 +2,11 @@ package authz
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"sync"
 	"time"
 
 	"github.com/oekit/kitx/pwd"
+	"github.com/oekit/pkg/encoding"
 	bizerrors "github.com/oekit/pkg/errors"
 )
 
@@ -15,12 +14,14 @@ import (
 //
 // 这是撤销黑名单/会话注册表键空间的**唯一产出口**：所有按令牌定位的键
 // （黑名单条目、会话 AccessHash/RefreshHash）都必须经本函数派生，下游不再
-// 各写一份 sha256 口径——两份拷贝靠注释对齐、漂移即强踢失效（#119 下游实证）。
+// 各写一份 sha256 口径（#119 下游实证：两份拷贝漂移即强踢失效）。
+// #208：哈希实现单源收编 pkg/encoding.Sha256Hex（逐行等价）——此前手写的
+// sha256.Sum256+hex.EncodeToString 正是「宣言靠注释对齐」的残留面；kitx 本就
+// 依赖 pkg，单源落在 pkg，kitx 侧零 sha256 实现。
 // 入参是完整令牌串而非 jti：绑定到具体令牌形态（同一 jti 的两个令牌串不同、
 // 哈希不同，可分别吊销）。
 func TokenHash(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	return encoding.Sha256Hex([]byte(token))
 }
 
 // Revoker 撤销黑名单存储面（#119）：token 级 + 用户级两层，接口化存储。
