@@ -1,3 +1,9 @@
+## [v0.12.0] — 2026-11-18
+
+- - feat(authz/auth/jwt)（#218）：`Session` 增 `Username`/`AccessJTI`（Flow 从 User.Claims 与签发结果填充，下游不再二次 Patch）；`SessionRegistry` 增 `GetByID`/`GetByJTI`/`ListAll`/`Delete`（jti/all 新索引，SetNX+登记代次 ABA 复核，Kick/Delete/rollback 同套清理）；`jwt.Manager.IssuePairWithJTI` 直出两枚 jti（不回读——签发时已过期/WithIssuedAt 合法形态会被复验误判）；authztest 契约套件覆盖新查询面。
+
+关联问题单：kitx#218。
+
 ## [v0.11.1] — 2026-11-18
 
 - WithClock(nil) 语义统一回退默认——auth/flow WithClock、authz WithRevokerClock/WithSessionStoreClock/WithRegistryClock、jwt WithNow 共 5 处 panic 派改回退默认,与 pkg/cache/webhook/总则②对齐(行为变更:原 nil panic 场景现正常)(#538 kitx 侧收尾)
