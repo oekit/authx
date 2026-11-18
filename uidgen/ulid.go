@@ -62,6 +62,11 @@ var ulidMono struct {
 	lastEnt [ulidEntropySize]byte
 }
 
+// ulidNow 是 ULID() 墙钟毫秒的间接层（randRead 同款缝），仅供测试注入固定
+// 时刻做确定性断言：seed ulidMono 与 ULID() 取钟是两次独立读钟，真实时钟
+// 恰在两步之间跳毫秒会随机改走「新毫秒换新熵」分支（#221 的 CI 随机挂）。
+var ulidNow = func() int64 { return time.Now().UnixMilli() }
+
 // ULID 返回 26 字符的 ULID（Universally Unique Lexicographically Sortable Identifier）。
 //
 // 结构 = 48 bit 毫秒时间戳（Unix 纪元）+ 80 bit 熵，Crockford Base32 编码。
@@ -91,7 +96,7 @@ func ULIDE() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	now := time.Now().UnixMilli()
+	now := ulidNow()
 
 	ulidMono.mu.Lock()
 	defer ulidMono.mu.Unlock()

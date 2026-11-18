@@ -335,6 +335,15 @@ func TestULIDMonotonicMatchesTime(t *testing.T) {
 
 // TestULIDClockSkewFrozen 验证时钟回拨时冻结在上次的毫秒。
 func TestULIDClockSkewFrozen(t *testing.T) {
+	// 钉住时钟（ulidNow 缝）：下面 seed 的 lastMS 是墙钟 +5s，ULID() 内部是
+	// 第二次独立读钟——两步之间若被调度停顿超过 5s（CI 高载/-race 慢机器），
+	// 真实时钟会越过 lastMS 随机改走「新毫秒换新熵」分支，冻结断言随机挂。
+	// 钉住后 ULID() 必见 now < lastMS → 走冻结分支，纯逻辑确定化。
+	now := time.Now().UnixMilli()
+	savedNow := ulidNow
+	ulidNow = func() int64 { return now }
+	defer func() { ulidNow = savedNow }()
+
 	ulidMono.mu.Lock()
 	savedMS, savedEnt := ulidMono.lastMS, ulidMono.lastEnt
 	ulidMono.mu.Unlock()
@@ -344,7 +353,7 @@ func TestULIDClockSkewFrozen(t *testing.T) {
 		ulidMono.mu.Unlock()
 	}()
 
-	future := time.Now().UnixMilli() + 5000
+	future := now + 5000
 	ulidMono.mu.Lock()
 	ulidMono.lastMS = future
 	ulidMono.lastEnt = [ulidEntropySize]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
@@ -365,6 +374,16 @@ func TestULIDClockSkewFrozen(t *testing.T) {
 
 // TestULIDEntropyOverflowCarries 验证 80 bit 熵用尽时进位到下一毫秒。
 func TestULIDEntropyOverflowCarries(t *testing.T) {
+	// 钉住时钟（ulidNow 缝）：下面 seed 的 lastMS 与 ULID() 内部的取钟是两次
+	// 独立读钟——真实时钟恰在两步之间跳毫秒时，ULID() 会随机改走「新毫秒换
+	// 新熵」分支（#221 的 CI 随机挂：进位断言撞见全新随机熵）。钉住后 ULID()
+	// 必见 currentMS==lastMS → 走熵递增 → 溢出进位，ts==now+1 由递增逻辑
+	// 给出而非墙钟，整条路径确定化。
+	now := time.Now().UnixMilli()
+	savedNow := ulidNow
+	ulidNow = func() int64 { return now }
+	defer func() { ulidNow = savedNow }()
+
 	ulidMono.mu.Lock()
 	savedMS, savedEnt := ulidMono.lastMS, ulidMono.lastEnt
 	ulidMono.mu.Unlock()
@@ -374,7 +393,6 @@ func TestULIDEntropyOverflowCarries(t *testing.T) {
 		ulidMono.mu.Unlock()
 	}()
 
-	now := time.Now().UnixMilli()
 	ulidMono.mu.Lock()
 	ulidMono.lastMS = now
 	ulidMono.lastEnt = [ulidEntropySize]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
