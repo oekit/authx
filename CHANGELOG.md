@@ -1,3 +1,7 @@
+## [v0.11.1] — 2026-11-18
+
+- WithClock(nil) 语义统一回退默认——auth/flow WithClock、authz WithRevokerClock/WithSessionStoreClock/WithRegistryClock、jwt WithNow 共 5 处 panic 派改回退默认,与 pkg/cache/webhook/总则②对齐(行为变更:原 nil panic 场景现正常)(#538 kitx 侧收尾)
+
 ## [v0.11.0] — 2026-11-18
 
 - validator panic 转译走 Recovered、Unwrap 缓存载体+新增 ErrValidation 哨兵(#208);authz MemSessionStore/MemRevoker TTL 骨架单源包内 ttlmap(#209);uidgen newV4 委托 pkg/stringx.UUIDv4 单源;TokenHash 收敛 encoding.Sha256Hex
