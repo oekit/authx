@@ -50,15 +50,22 @@ func TestIssueTailFailurePathsRevokeIssued(t *testing.T) {
 		}
 	}
 
-	t.Run("回读失败回收", func(t *testing.T) {
-		// #154 点名的真实配置形态：签发侧没配 issuer、解析侧钉 ExpectedIssuer
-		// ——签发/解析不对称 ⇒ 回读必失败，且每次 IssuePair 必现。
+	t.Run("签发解析不对称不再误报（#225）", func(t *testing.T) {
+		// #154 时代的真实配置形态：签发侧没配 issuer、解析侧钉 ExpectedIssuer。
+		// 旧实现回读 refresh 取 jti，签发/解析不对称 ⇒ 回读必失败 ⇒ 把成功
+		// 签发误判成失败并回收。#225 后两枚 jti 均由签发路径直出——同配置
+		// 下 IssuePair 必须成功、零回收（这正是本修复的回归面）。
 		f, capRev := newCaptured(t, WithParseOptions(jwt.WithExpectedIssuer("other")))
-		_, err := f.IssuePair(ctx, &User{ID: "u1"}, SessionMeta{})
-		if err == nil || !strings.Contains(err.Error(), "回读签发产物失败") {
-			t.Fatalf("回读失败必须报错且带原因：%v", err)
+		pair, err := f.IssuePair(ctx, &User{ID: "u1"}, SessionMeta{})
+		if err != nil {
+			t.Fatalf("签发/解析不对称是合法形态，IssuePair 不得再误报（#225）：%v", err)
 		}
-		assertBothRevoked(t, f, capRev)
+		if pair.Access == "" || pair.Refresh == "" {
+			t.Fatal("IssuePair 成功时双令牌必须非空")
+		}
+		if got := capRev.count(); got != 0 {
+			t.Fatalf("成功签发不得回收令牌，回收次数 = %d", got)
+		}
 	})
 
 	t.Run("会话 ID 生成失败回收", func(t *testing.T) {

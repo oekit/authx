@@ -123,21 +123,27 @@ func NewManagerHS256(secret []byte) (*Manager, error) {
 // 解（token_type 落在 Extra），但按分型消费请走 ParseTyped——分型校验正是本
 // 原语的存在意义。
 func (m *Manager) IssuePair(subject string, ttlAccess, ttlRefresh time.Duration, opts ...SignOption) (access, refresh string, err error) {
-	// min 内建（Go 1.21+）与「任一非正即拒」等价：ttl 必须为正——配置零值
-	// 透传签出永不过期令牌是最危险的缺省（#65 同款纪律，IssuePair 以 error
-	// 表达）。
+	// 薄委托 IssuePairWithJTI（#226 收敛）：两函数签发主体逐字平行，维护
+	// 两份只会漂移（jti 字段丢弃即可）；ttl 正性校验由 requirePositiveTTLs
+	// 单源执行（#65 纪律）。
+	if err := requirePositiveTTLs("IssuePair", ttlAccess, ttlRefresh); err != nil {
+		return "", "", err
+	}
+	kp, err := m.IssuePairWithJTI(subject, ttlAccess, ttlRefresh, opts...)
+	if err != nil {
+		return "", "", err
+	}
+	return kp.Access, kp.Refresh, nil
+}
+
+// requirePositiveTTLs 是 IssuePair/IssuePairWithJTI/Refresh 三处 ttl 正性
+// 校验的单源（#226 收敛，原为三份逐字同构的判定+雷同长文案）：配置零值
+// 透传签出永不过期令牌是最危险的缺省（#65 纪律，以 error 表达）。
+func requirePositiveTTLs(caller string, ttlAccess, ttlRefresh time.Duration) error {
 	if min(ttlAccess, ttlRefresh) <= 0 {
-		return "", "", bizerrors.Newf("IssuePair 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，IssuePair 以 error 表达）", ttlAccess, ttlRefresh)
+		return bizerrors.Newf("%s 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，以 error 表达）", caller, ttlAccess, ttlRefresh)
 	}
-	access, _, err = m.issueTyped(TokenAccess, subject, ttlAccess, opts)
-	if err != nil {
-		return "", "", err
-	}
-	refresh, _, err = m.issueTyped(TokenRefresh, subject, ttlRefresh, opts)
-	if err != nil {
-		return "", "", err
-	}
-	return access, refresh, nil
+	return nil
 }
 
 // TokenPair 是一次成对签发的完整结果：两枚令牌串 + 各自 jti（#218）。
@@ -158,8 +164,8 @@ type TokenPair struct {
 // 显式 WithJTI 的用户选项语义与 IssuePair 一致：两枚令牌共享同一选项值
 // （用户显式覆盖时；缺省各自独立生成）。
 func (m *Manager) IssuePairWithJTI(subject string, ttlAccess, ttlRefresh time.Duration, opts ...SignOption) (TokenPair, error) {
-	if min(ttlAccess, ttlRefresh) <= 0 {
-		return TokenPair{}, bizerrors.Newf("IssuePairWithJTI 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，以 error 表达）", ttlAccess, ttlRefresh)
+	if err := requirePositiveTTLs("IssuePairWithJTI", ttlAccess, ttlRefresh); err != nil {
+		return TokenPair{}, err
 	}
 	access, accessJTI, err := m.issueTyped(TokenAccess, subject, ttlAccess, opts)
 	if err != nil {
@@ -212,9 +218,9 @@ func (m *Manager) ParseTyped(kind TokenKind, token string, opts ...ParseOption) 
 // 依赖平台层在钩子里记录 jti 并在后续 ParseTyped 通路外拒绝（库不维护黑名单，
 // #97：有状态撤销是平台层的薄配置职责）。
 func (m *Manager) Refresh(refreshToken string, ttlAccess, ttlRefresh time.Duration, onRotate func(old *Claims), opts ...ParseOption) (access, refresh string, err error) {
-	// min 内建（Go 1.21+）与「任一非正即拒」等价（IssuePair 同口径，#65 纪律）。
-	if min(ttlAccess, ttlRefresh) <= 0 {
-		return "", "", bizerrors.Newf("Refresh 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，Refresh 以 error 表达）", ttlAccess, ttlRefresh)
+	// ttl 正性校验单源（requirePositiveTTLs，#226 收敛；#65 纪律）。
+	if err := requirePositiveTTLs("Refresh", ttlAccess, ttlRefresh); err != nil {
+		return "", "", err
 	}
 	old, err := m.ParseTyped(TokenRefresh, refreshToken, opts...)
 	if err != nil {
