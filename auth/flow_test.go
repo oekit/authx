@@ -693,3 +693,38 @@ func TestIsRevoked(t *testing.T) {
 		t.Fatal("nil Revoker 必须报错")
 	}
 }
+
+// 会话登记元数据（#218）：Username 从 User.Claims 注入，AccessJTI/RefreshJTI
+// 来自签发结果（各自独立、非空）；轮换后的新会话仍带 username 与新 jti。
+func TestSessionMetadataPopulated(t *testing.T) {
+	ctx := context.Background()
+	f, _, _, _ := newTestFlow(t)
+	u := &User{ID: "u1", Claims: map[string]any{"username": "alice"}}
+
+	pair, err := f.IssuePair(ctx, u, SessionMeta{Device: "dev-1"})
+	if err != nil {
+		t.Fatalf("IssuePair() error = %v", err)
+	}
+	s := pair.Session
+	if s.Username != "alice" {
+		t.Fatalf("Session.Username = %q, want alice", s.Username)
+	}
+	if s.AccessJTI == "" || s.RefreshJTI == "" {
+		t.Fatalf("jti 元数据缺失: %+v", s)
+	}
+	if s.AccessJTI == s.RefreshJTI {
+		t.Fatal("access/refresh jti 必须各自独立")
+	}
+
+	repo := &fakeRepo{user: &User{ID: "u1", Claims: map[string]any{"username": "alice"}}}
+	np, _, err := f.RotateRefresh(ctx, repo, pair.Refresh, SessionMeta{})
+	if err != nil {
+		t.Fatalf("RotateRefresh() error = %v", err)
+	}
+	if np.Session.Username != "alice" {
+		t.Fatalf("轮换后 Session.Username = %q, want alice", np.Session.Username)
+	}
+	if np.Session.AccessJTI == "" || np.Session.AccessJTI == s.AccessJTI {
+		t.Fatalf("轮换后 access jti 应重新生成: old=%q new=%q", s.AccessJTI, np.Session.AccessJTI)
+	}
+}

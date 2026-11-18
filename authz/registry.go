@@ -44,6 +44,13 @@ type refreshMount struct {
 	Generation string `json:"generation"`
 }
 
+// jtiMount 是 jti 索引的值：会话 ID + 登记代次（#218）——与 refreshMount 同构，
+// 代次用于清理期 ABA 复核（同 ID 重建后旧索引不得误删新挂载）。
+type jtiMount struct {
+	ID         string `json:"id"`
+	Generation string `json:"generation"`
+}
+
 // StoreRegistry 是基于 SessionStore 的会话注册表编排实现（#196）：把注册冲突、
 // refreshHash 唯一挂载、Kick 三态（原子认领 + 双 hash 拉黑 + 删键）与
 // KickUser 聚合计数集中在本层，下游只需实现 SessionStore（Redis 等适配器约
@@ -53,7 +60,9 @@ type refreshMount struct {
 //
 //	<prefix>id:<sessionID>         主键（storedSession JSON：Session + 登记代次）
 //	<prefix>refresh:<refreshHash>  refresh 反查/唯一挂载（refreshMount JSON）
+//	<prefix>jti:<jti>              access/refresh jti 反查（jtiMount JSON，#218）
 //	<prefix>user:<userID>          用户索引集合（成员=sessionID）
+//	<prefix>all                    全量会话索引集合（成员=sessionID，#218）
 //	<prefix>lock:id:<sessionID>    会话操作锁（SetNX + TTL）
 //	<prefix>lock:refresh:<hash>    refresh 索引变更锁（SetNX + TTL）
 //
@@ -138,12 +147,20 @@ func (r *StoreRegistry) Register(ctx context.Context, s Session, ttl time.Durati
 		return bizerrors.Newf("authz: 会话 ID %q 已登记——登记不可覆盖，先 Kick 再登记", s.ID)
 	}
 	if err := r.mountRefresh(ctx, s.ID, s.RefreshHash, gen, ttl); err != nil {
-		return errors.Join(err, r.rollbackRegistration(ctx, s))
+		return errors.Join(err, r.rollbackRegistration(ctx, s, gen))
+	}
+	// jti 索引（#218）：access/refresh 两枚 jti 都挂，管理端可按任一 jti 反查。
+	if err := r.mountJTIs(ctx, s, gen, ttl); err != nil {
+		return errors.Join(err, r.rollbackRegistration(ctx, s, gen))
 	}
 	// 用户索引集合 TTL 只延长不缩短（SAdd 契约）：短寿命会话不得提前抹掉
 	// 同用户的长寿命会话。
 	if err := r.store.SAdd(ctx, r.userKey(s.UserID), s.ID, ttl); err != nil {
-		return errors.Join(bizerrors.Wrapf(err, "authz: 登记用户索引失败"), r.rollbackRegistration(ctx, s))
+		return errors.Join(bizerrors.Wrapf(err, "authz: 登记用户索引失败"), r.rollbackRegistration(ctx, s, gen))
+	}
+	// 全量索引（#218，管理端 ListAll）：与用户索引同款 TTL 只延长不缩短。
+	if err := r.store.SAdd(ctx, r.allKey(), s.ID, ttl); err != nil {
+		return errors.Join(bizerrors.Wrapf(err, "authz: 登记全量索引失败"), r.rollbackRegistration(ctx, s, gen))
 	}
 	return nil
 }
@@ -181,6 +198,62 @@ func (r *StoreRegistry) GetByRefreshHash(ctx context.Context, refreshHash string
 	return stored.Session, nil
 }
 
+// GetByID 按会话 ID 直查（契约见 SessionRegistry）。
+func (r *StoreRegistry) GetByID(ctx context.Context, id string) (Session, error) {
+	if err := ctx.Err(); err != nil {
+		return Session{}, err
+	}
+	if id == "" {
+		return Session{}, ErrSessionNotFound
+	}
+	stored, live, err := r.getSession(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if !live {
+		return Session{}, ErrSessionNotFound
+	}
+	return stored.Session, nil
+}
+
+// GetByJTI 按 access/refresh jti 反查会话（契约见 SessionRegistry）。
+func (r *StoreRegistry) GetByJTI(ctx context.Context, jti string) (Session, error) {
+	if err := ctx.Err(); err != nil {
+		return Session{}, err
+	}
+	if jti == "" {
+		return Session{}, ErrSessionNotFound
+	}
+	raw, ok, err := r.store.Get(ctx, r.jtiKey(jti))
+	if err != nil {
+		return Session{}, bizerrors.Wrapf(err, "authz: 查询 jti 索引失败")
+	}
+	if !ok {
+		return Session{}, ErrSessionNotFound
+	}
+	mount, err := decodeJTIMount(raw)
+	if err != nil {
+		return Session{}, bizerrors.Wrapf(err, "authz: jti 索引数据损坏")
+	}
+	stored, live, err := r.getSession(ctx, mount.ID)
+	if err != nil {
+		return Session{}, err
+	}
+	if !live {
+		// 索引残留（主键已过期/被删）：语义等同不在；残留由 TTL/清理出清。
+		return Session{}, ErrSessionNotFound
+	}
+	// 代次 + jti 归属复核（#136 ABA 同构）：索引必须指向当前登记、且该 jti
+	// 确实是本会话两枚 jti 之一。
+	if stored.Generation != mount.Generation || stored.Session.ID != mount.ID {
+		return Session{}, ErrSessionNotFound
+	}
+	if stored.Session.AccessJTI != jti && stored.Session.RefreshJTI != jti {
+		return Session{}, ErrSessionNotFound
+	}
+	return stored.Session, nil
+}
+
 // ListByUser 枚举某用户的在线会话（契约见 SessionRegistry）。
 func (r *StoreRegistry) ListByUser(ctx context.Context, userID string) ([]Session, error) {
 	if err := ctx.Err(); err != nil {
@@ -190,14 +263,38 @@ func (r *StoreRegistry) ListByUser(ctx context.Context, userID string) ([]Sessio
 	if err != nil {
 		return nil, bizerrors.Wrapf(err, "authz: 枚举用户会话索引失败")
 	}
-	out := make([]Session, 0, len(members))
-	for _, id := range members {
+	return r.sessionsFromIDs(ctx, members, func(s Session) bool { return s.UserID == userID })
+}
+
+// ListAll 枚举全平台在线会话（契约见 SessionRegistry，#218）。
+//
+// 升级提示：all 索引是 v0.12.0 新增，升级前登记的**存量会话**不在索引里
+// （不 SCAN 全键反推，避免给存储面加全表扫描）。存量会话的轮换/强踢不受
+// 影响（refreshHash 索引仍在）；管理端全量枚举只覆盖升级后登记的会话。
+func (r *StoreRegistry) ListAll(ctx context.Context) ([]Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	members, err := r.store.SMembers(ctx, r.allKey())
+	if err != nil {
+		return nil, bizerrors.Wrapf(err, "authz: 枚举全量会话索引失败")
+	}
+	return r.sessionsFromIDs(ctx, members, nil)
+}
+
+// sessionsFromIDs 按 ID 集合读快照并稳定排序（ListByUser/ListAll 共用）。
+// keep 为 nil 表示不过滤；过期/已下线/索引错挂的成员不出现（快照语义）。
+func (r *StoreRegistry) sessionsFromIDs(ctx context.Context, ids []string, keep func(Session) bool) ([]Session, error) {
+	out := make([]Session, 0, len(ids))
+	for _, id := range ids {
 		stored, live, err := r.getSession(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		// 过期/已下线/索引错挂的成员不出现（快照语义）。
-		if !live || stored.Session.UserID != userID {
+		if !live {
+			continue
+		}
+		if keep != nil && !keep(stored.Session) {
 			continue
 		}
 		out = append(out, stored.Session)
@@ -292,7 +389,45 @@ func (r *StoreRegistry) Kick(ctx context.Context, id string) (bool, error) {
 	if !deleted {
 		return false, nil // 重锁后自然过期：按不存在返回
 	}
-	r.cleanupAfterKick(ctx, stored)
+	r.cleanupIndexes(ctx, stored)
+	return true, nil
+}
+
+// Delete 仅删除登记与索引（不拉黑，契约见 SessionRegistry）。
+//
+// 与 Kick 的差异：不调用 Revoker——调用方已通过其他路径完成令牌撤销（如
+// OAuth 撤销端点先拉黑令牌），只需把登记下线。ID 锁内读快照 → 删主键 →
+// 清理 refresh/用户/全量/jti 索引（同一套 cleanupIndexes，代次复核防 ABA）。
+func (r *StoreRegistry) Delete(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if id == "" {
+		return false, nil
+	}
+	release, acquired, err := r.acquireLock(ctx, r.idLockKey(id))
+	if err != nil {
+		return false, err
+	}
+	if !acquired {
+		return false, nil
+	}
+	defer release()
+	stored, live, err := r.getSession(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if !live {
+		return false, nil
+	}
+	deleted, err := r.store.Del(ctx, r.idKey(id))
+	if err != nil {
+		return false, bizerrors.Wrapf(err, "authz: 删除会话主键失败（登记保留，可重试）")
+	}
+	if !deleted {
+		return false, nil
+	}
+	r.cleanupIndexes(ctx, stored)
 	return true, nil
 }
 
@@ -371,13 +506,15 @@ func (r *StoreRegistry) mountRefresh(ctx context.Context, id, refreshHash, gen s
 	return bizerrors.New("authz: RefreshHash 挂载竞争失败，请重试")
 }
 
-// rollbackRegistration 回滚登记失败留下的主键/用户索引（尽力而为，错误聚合）。
+// rollbackRegistration 回滚登记失败留下的主键/用户/全量/jti 索引（尽力而为，
+// 错误聚合）。
 //
 // 刻意**不删 refresh 索引**：rollback 已不在 refresh 锁内，此时删除可能与并发
 // 挂载竞争（误删他人在主键删除后重新挂上的映射）。refresh 索引 TTL 与登记寿命
 // 相同，且主键缺失/代次不匹配时 GetByRefreshHash 已按不存在处理、下次
-// mountRefresh 会把残留当 stale 清掉——保留它比误删安全。
-func (r *StoreRegistry) rollbackRegistration(ctx context.Context, s Session) error {
+// mountRefresh 会把残留当 stale 清掉——保留它比误删安全。jti 索引同理只在
+// 代次匹配时删除（jti 全局唯一，不存在并发挂载同一 jti 的合法路径）。
+func (r *StoreRegistry) rollbackRegistration(ctx context.Context, s Session, gen string) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	var errs []error
@@ -387,22 +524,117 @@ func (r *StoreRegistry) rollbackRegistration(ctx context.Context, s Session) err
 	if err := r.store.SRem(rctx, r.userKey(s.UserID), s.ID); err != nil {
 		errs = append(errs, bizerrors.Wrapf(err, "回滚用户索引"))
 	}
+	if err := r.store.SRem(rctx, r.allKey(), s.ID); err != nil {
+		errs = append(errs, bizerrors.Wrapf(err, "回滚全量索引"))
+	}
+	errs = append(errs, r.cleanupJTIIndexes(rctx, storedSession{Session: s, Generation: gen})...)
 	return errors.Join(errs...)
 }
 
-// cleanupAfterKick 尽力清理下线后的索引（调用方持有 ID 锁）：refresh 索引仅在
-// **同一登记代次**仍挂载时删除（refresh 锁内比对）；用户索引幂等 SRem。清理
-// 失败只记日志——主键已删即下线已生效，索引残留会被读路径过滤/TTL 出清，不得
-// 把成功强踢翻成错误。
-func (r *StoreRegistry) cleanupAfterKick(ctx context.Context, stored storedSession) {
+// mountJTIs 挂载 access/refresh jti 索引（#218，调用方已持有 ID 锁）。
+// jti 全局唯一是签发面不变式：已挂到**同代次**活会话 ⇒ 报错（重复 jti 是
+// 严重缺陷，宁可登记失败也不静默覆盖）；挂到已过期会话/旧代次残留 ⇒ 清残后
+// 重试一次（与 mountRefresh 同款）。
+func (r *StoreRegistry) mountJTIs(ctx context.Context, s Session, gen string, ttl time.Duration) error {
+	for _, jti := range []string{s.RefreshJTI, s.AccessJTI} {
+		if jti == "" {
+			continue
+		}
+		key := r.jtiKey(jti)
+		value, err := encodeJTIMount(jtiMount{ID: s.ID, Generation: gen})
+		if err != nil {
+			return bizerrors.Wrapf(err, "authz: jti 索引序列化失败")
+		}
+		mounted := false
+		for attempt := 0; attempt < 2 && !mounted; attempt++ {
+			ok, err := r.store.SetNX(ctx, key, value, ttl)
+			if err != nil {
+				return bizerrors.Wrapf(err, "authz: 挂载 jti 索引失败")
+			}
+			if ok {
+				mounted = true
+				break
+			}
+			raw, exists, err := r.store.Get(ctx, key)
+			if err != nil {
+				return bizerrors.Wrapf(err, "authz: 查询 jti 索引失败")
+			}
+			if exists {
+				cur, err := decodeJTIMount(raw)
+				if err != nil {
+					return bizerrors.Wrapf(err, "authz: jti 索引数据损坏")
+				}
+				stored, live, err := r.getSession(ctx, cur.ID)
+				if err != nil {
+					return err
+				}
+				if live && stored.Generation == cur.Generation {
+					return bizerrors.Newf("authz: jti %q 已挂在会话 %q 上——jti 必须全局唯一（签发面重复 jti 是严重缺陷）", jti, cur.ID)
+				}
+			}
+			// 已过期会话或旧代次残留：清残后重试。
+			if _, err := r.store.Del(ctx, key); err != nil {
+				return bizerrors.Wrapf(err, "authz: 清理过期 jti 索引失败")
+			}
+		}
+		if !mounted {
+			return bizerrors.New("authz: jti 索引挂载竞争失败，请重试")
+		}
+	}
+	return nil
+}
+
+// cleanupIndexes 尽力清理下线后的索引（Kick/Delete 共用；调用方持有 ID 锁）：
+// refresh 索引仅在**同一登记代次**仍挂载时删除（refresh 锁内比对）；jti 索引
+// 同样按代次比对后删除；用户/全量索引幂等 SRem。清理失败只记日志——主键已删
+// 即下线已生效，索引残留会被读路径过滤/TTL 出清，不得把成功强踢翻成错误。
+func (r *StoreRegistry) cleanupIndexes(ctx context.Context, stored storedSession) {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if stored.Session.RefreshHash != "" {
 		r.cleanupRefreshIndex(rctx, stored)
 	}
 	if err := r.store.SRem(rctx, r.userKey(stored.Session.UserID), stored.Session.ID); err != nil {
-		log.CtxWarn(rctx, "强踢后清理用户索引失败", "session_id", stored.Session.ID, logx.ErrKey, err)
+		log.CtxWarn(rctx, "下线后清理用户索引失败", "session_id", stored.Session.ID, logx.ErrKey, err)
 	}
+	if err := r.store.SRem(rctx, r.allKey(), stored.Session.ID); err != nil {
+		log.CtxWarn(rctx, "下线后清理全量索引失败", "session_id", stored.Session.ID, logx.ErrKey, err)
+	}
+	for _, err := range r.cleanupJTIIndexes(rctx, stored) {
+		log.CtxWarn(rctx, "下线后清理 jti 索引失败", "session_id", stored.Session.ID, logx.ErrKey, err)
+	}
+}
+
+// cleanupJTIIndexes 按代次删除会话的两枚 jti 索引（调用方持 ID 锁）。
+// 索引已被并发重建/覆盖（ID 或代次不匹配）⇒ 跳过，不得误删（#136 ABA 同构）。
+func (r *StoreRegistry) cleanupJTIIndexes(ctx context.Context, stored storedSession) []error {
+	var errs []error
+	for _, jti := range []string{stored.Session.RefreshJTI, stored.Session.AccessJTI} {
+		if jti == "" {
+			continue
+		}
+		key := r.jtiKey(jti)
+		raw, ok, err := r.store.Get(ctx, key)
+		if err != nil {
+			errs = append(errs, bizerrors.Wrapf(err, "读取 jti 索引 %q", jti))
+			continue
+		}
+		if !ok {
+			continue
+		}
+		mount, err := decodeJTIMount(raw)
+		if err != nil {
+			errs = append(errs, bizerrors.Wrapf(err, "解析 jti 索引 %q", jti))
+			continue
+		}
+		if mount.ID != stored.Session.ID || mount.Generation != stored.Generation {
+			continue
+		}
+		if _, err := r.store.Del(ctx, key); err != nil {
+			errs = append(errs, bizerrors.Wrapf(err, "删除 jti 索引 %q", jti))
+		}
+	}
+	return errs
 }
 
 // cleanupRefreshIndex 在 refresh 锁内按代次删除 refresh 索引；锁被占用或存储
@@ -485,6 +717,26 @@ func decodeRefreshMount(raw string) (refreshMount, error) {
 	return m, nil
 }
 
+// encodeJTIMount / decodeJTIMount 是 jti 索引值的内部编解码（#218）。
+func encodeJTIMount(m jtiMount) (string, error) {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func decodeJTIMount(raw string) (jtiMount, error) {
+	var m jtiMount
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return jtiMount{}, err
+	}
+	if m.ID == "" || m.Generation == "" {
+		return jtiMount{}, bizerrors.New("jtiMount 缺 ID/Generation")
+	}
+	return m, nil
+}
+
 // acquireLock 抢操作锁：返回释放函数；acquired=false 表示锁已被占用。
 // 释放失败只记日志（锁 TTL 自愈），不改变调用方已落地结果。
 func (r *StoreRegistry) acquireLock(ctx context.Context, key string) (release func(), acquired bool, err error) {
@@ -520,6 +772,8 @@ func normalizeStorePrefix(prefix string) string {
 
 func (r *StoreRegistry) idKey(id string) string            { return r.prefix + "id:" + id }
 func (r *StoreRegistry) refreshKey(hash string) string     { return r.prefix + "refresh:" + hash }
+func (r *StoreRegistry) jtiKey(jti string) string          { return r.prefix + "jti:" + jti }
+func (r *StoreRegistry) allKey() string                    { return r.prefix + "all" }
 func (r *StoreRegistry) userKey(userID string) string      { return r.prefix + "user:" + userID }
 func (r *StoreRegistry) idLockKey(id string) string        { return r.prefix + "lock:id:" + id }
 func (r *StoreRegistry) refreshLockKey(hash string) string { return r.prefix + "lock:refresh:" + hash }

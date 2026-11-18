@@ -134,6 +134,38 @@ func TestIssuePairHS256RoundTrip(t *testing.T) {
 	}
 }
 
+// IssuePairWithJTI：jti 由签发路径直接返回（#218），与令牌内 jti 一致、两枚
+// 独立；显式 WithJTI 的覆盖语义与 IssuePair 相同（两令牌共享用户显式值）。
+func TestIssuePairWithJTI(t *testing.T) {
+	m, err := NewManagerHS256(testHS256Secret(t))
+	if err != nil {
+		t.Fatalf("NewManagerHS256() error = %v", err)
+	}
+	p, err := m.IssuePairWithJTI("u-1", time.Minute, time.Hour)
+	if err != nil {
+		t.Fatalf("IssuePairWithJTI() error = %v", err)
+	}
+	if p.AccessJTI == "" || p.RefreshJTI == "" || p.AccessJTI == p.RefreshJTI {
+		t.Fatalf("jti 元数据异常（空或两枚相同）: %+v", p)
+	}
+	ac, err := m.ParseTyped(TokenAccess, p.Access)
+	if err != nil || ac.ID != p.AccessJTI {
+		t.Fatalf("access jti = %q err=%v, want %q", ac.ID, err, p.AccessJTI)
+	}
+	rc, err := m.ParseTyped(TokenRefresh, p.Refresh)
+	if err != nil || rc.ID != p.RefreshJTI {
+		t.Fatalf("refresh jti = %q err=%v, want %q", rc.ID, err, p.RefreshJTI)
+	}
+	// 显式 WithJTI：与 IssuePair 一致（同一选项作用于两枚令牌）。
+	p2, err := m.IssuePairWithJTI("u-1", time.Minute, time.Hour, WithJTI("fixed-jti"))
+	if err != nil || p2.AccessJTI != "fixed-jti" || p2.RefreshJTI != "fixed-jti" {
+		t.Fatalf("显式 WithJTI 元数据 = %+v err=%v", p2, err)
+	}
+	if _, err := m.IssuePairWithJTI("u-1", 0, time.Hour); err == nil {
+		t.Fatal("ttl 非正必须拒绝")
+	}
+}
+
 // 分型校验 fail-closed：交叉分型拒绝；非 Manager 签发（无 token_type 声明）拒绝；
 // 未知分型入口拒绝；token_type 声明不可经 WithClaim 伪造（#71+#97 注入面）。
 func TestParseTypedFailClosed(t *testing.T) {

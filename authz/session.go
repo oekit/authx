@@ -28,8 +28,14 @@ type Session struct {
 	IP string
 	// UA 登录客户端 UA（审计留痕；可空）。
 	UA string
+	// Username 会话归属用户名（管理端列表展示；#218）。由编排层从
+	// User.Claims["username"] 填充，kitx 不解析业务用户表；可空（调用方未注入）。
+	Username string
 	// RefreshJTI 会话对应的 refresh 令牌 jti（管理端展示与对账；可空）。
 	RefreshJTI string
+	// AccessJTI access 令牌的 jti（管理端按 jti 反查/强踢；#218）。由编排层
+	// 从新签 access 令牌回读填充；可空（未登记时 jti 索引跳过该路）。
+	AccessJTI string
 	// AccessHash access 令牌的 TokenHash（强踢拉黑口径；可空——空则 Kick 跳过该路）。
 	AccessHash string
 	// RefreshHash refresh 令牌的 TokenHash（轮换认领键；必填）。
@@ -56,9 +62,22 @@ type SessionRegistry interface {
 	// GetByRefreshHash 按 refresh 哈希查会话（refresh 轮换的认领前置）。
 	// 不在（未登记/已过期/已下线）⇒ ErrSessionNotFound。
 	GetByRefreshHash(ctx context.Context, refreshHash string) (Session, error)
+	// GetByID 按会话 ID 直查（管理端主键入口，#218）。不在 ⇒ ErrSessionNotFound。
+	GetByID(ctx context.Context, id string) (Session, error)
+	// GetByJTI 按 access/refresh 令牌的 jti 反查会话（管理端 jti 入口，#218）。
+	// jti 索引在登记时由 RefreshJTI/AccessJTI 建立（非空项）；不在 ⇒
+	// ErrSessionNotFound。
+	GetByJTI(ctx context.Context, jti string) (Session, error)
 	// ListByUser 枚举某用户的在线会话（管理端；按 LoginAt、ID 稳定排序，
 	// 过期会话不出现）。返回值是快照副本，改写不影响登记表。
 	ListByUser(ctx context.Context, userID string) ([]Session, error)
+	// ListAll 枚举全平台在线会话（管理端全量入口，#218；排序与 ListByUser
+	// 一致，过期会话不出现）。返回值是快照副本。
+	ListAll(ctx context.Context) ([]Session, error)
+	// Delete 仅删除登记与索引（**不拉黑**），返回会话是否存在并被删除（#218）。
+	// 用于「令牌撤销已由其他路径完成、只需下线登记」的收尾（如 OAuth 撤销）；
+	// 需要双 hash 拉黑的强踢请用 Kick。
+	Delete(ctx context.Context, id string) (bool, error)
 	// Kick 强踢单会话：双 hash 拉黑 + 删键，**原子认领**。三态契约：
 	//   - (true, nil)：完整下线（拉黑与删键都已落地）；
 	//   - (false, nil)：登记不存在（幂等强踢的常态 / 轮换竞态的败方 / 同 ID
