@@ -1,3 +1,14 @@
+## [v0.12.1] — 2026-11-19
+
+- 第二轮重复逻辑深挖审计（2026-11-19）kitx 修复与收敛：
+
+- fix: issueTail 的 RefreshJTI 改由签发结果直出（kp.RefreshJTI），删除 refresh 令牌回读段——#218「jti 签发直出、不从令牌回读」的修法此前只落 AccessJTI 半边；签发/解析不对称（签发无 issuer 而解析钉 ExpectedIssuer 等）时回读必失败，把成功签发误判成失败并回收双令牌（IssuePair/RotateRefresh 共用路径均受影响）；TokenPair.RefreshJTI 与回读所得恒等，回读是纯多余复验+误报面（#225）
+- refactor: jwt 三份 ttl 正性校验收敛 requirePositiveTTLs 单源；IssuePair 薄委托 IssuePairWithJTI（签发主体不再两份逐字平行）（#226）
+- refactor: authz 索引挂载面收敛——refreshMount/jtiMount 合并 indexMount（wire 格式逐字相同，存量数据兼容）、两对编解码合一、mountRefresh/mountJTIs 共享骨架抽 mountIndexUnique（占用文案回调注入，refresh 唯一挂载 vs jti 全局唯一语义保留）（#226）
+- docs: Session.AccessJTI 字段注释修正（已直出不回读，#218 遗留）（#225）
+
+关联问题单：kitx#225、kitx#226。
+
 ## [v0.12.0] — 2026-11-18
 
 - - feat(authz/auth/jwt)（#218）：`Session` 增 `Username`/`AccessJTI`（Flow 从 User.Claims 与签发结果填充，下游不再二次 Patch）；`SessionRegistry` 增 `GetByID`/`GetByJTI`/`ListAll`/`Delete`（jti/all 新索引，SetNX+登记代次 ABA 复核，Kick/Delete/rollback 同套清理）；`jwt.Manager.IssuePairWithJTI` 直出两枚 jti（不回读——签发时已过期/WithIssuedAt 合法形态会被复验误判）；authztest 契约套件覆盖新查询面。
