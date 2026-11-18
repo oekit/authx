@@ -129,15 +129,47 @@ func (m *Manager) IssuePair(subject string, ttlAccess, ttlRefresh time.Duration,
 	if min(ttlAccess, ttlRefresh) <= 0 {
 		return "", "", bizerrors.Newf("IssuePair 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，IssuePair 以 error 表达）", ttlAccess, ttlRefresh)
 	}
-	access, err = m.issueTyped(TokenAccess, subject, ttlAccess, opts)
+	access, _, err = m.issueTyped(TokenAccess, subject, ttlAccess, opts)
 	if err != nil {
 		return "", "", err
 	}
-	refresh, err = m.issueTyped(TokenRefresh, subject, ttlRefresh, opts)
+	refresh, _, err = m.issueTyped(TokenRefresh, subject, ttlRefresh, opts)
 	if err != nil {
 		return "", "", err
 	}
 	return access, refresh, nil
+}
+
+// TokenPair 是一次成对签发的完整结果：两枚令牌串 + 各自 jti（#218）。
+type TokenPair struct {
+	Access     string
+	Refresh    string
+	AccessJTI  string
+	RefreshJTI string
+}
+
+// IssuePairWithJTI 同 IssuePair，额外返回两枚令牌各自的 jti（#218）。
+//
+// 存在理由：会话登记需要按 jti 建索引（管理端反查/强踢），而「签完再解析回读
+// 取 jti」会引入一次不必要的复验——签发时已过期/时钟注入（WithIssuedAt）等
+// 合法形态会让回读报 token expired，把成功签发翻成失败。jti 由签发路径直接
+// 返回是零成本、零误报的唯一口径。
+//
+// 显式 WithJTI 的用户选项语义与 IssuePair 一致：两枚令牌共享同一选项值
+// （用户显式覆盖时；缺省各自独立生成）。
+func (m *Manager) IssuePairWithJTI(subject string, ttlAccess, ttlRefresh time.Duration, opts ...SignOption) (TokenPair, error) {
+	if min(ttlAccess, ttlRefresh) <= 0 {
+		return TokenPair{}, bizerrors.Newf("IssuePairWithJTI 的 ttl 必须为正（access=%v refresh=%v）——配置零值透传签出永不过期令牌是最危险的缺省（#65 同款纪律，以 error 表达）", ttlAccess, ttlRefresh)
+	}
+	access, accessJTI, err := m.issueTyped(TokenAccess, subject, ttlAccess, opts)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	refresh, refreshJTI, err := m.issueTyped(TokenRefresh, subject, ttlRefresh, opts)
+	if err != nil {
+		return TokenPair{}, err
+	}
+	return TokenPair{Access: access, Refresh: refresh, AccessJTI: accessJTI, RefreshJTI: refreshJTI}, nil
 }
 
 // ParseTyped 分型校验并解析令牌：在既有校验语义（签名、exp/nbf、可选 aud/iss
@@ -218,11 +250,11 @@ func (m *Manager) Refresh(refreshToken string, ttlAccess, ttlRefresh time.Durati
 		}
 		base = append(base, WithClaim(k, v))
 	}
-	access, err = m.issueTyped(TokenAccess, old.Subject, ttlAccess, base)
+	access, _, err = m.issueTyped(TokenAccess, old.Subject, ttlAccess, base)
 	if err != nil {
 		return "", "", err
 	}
-	refresh, err = m.issueTyped(TokenRefresh, old.Subject, ttlRefresh, base)
+	refresh, _, err = m.issueTyped(TokenRefresh, old.Subject, ttlRefresh, base)
 	if err != nil {
 		return "", "", err
 	}
@@ -234,30 +266,30 @@ func (m *Manager) Refresh(refreshToken string, ttlAccess, ttlRefresh time.Durati
 
 // issueTyped 签发单枚带分型的令牌：用户选项在前，位置参数（subject/ttl）与
 // 分型盖章在后（last-wins，Manager 拍板）；用户未显式 WithJTI 时由库层自动
-// 生成（jti 出口集中在库层，#97）。
-func (m *Manager) issueTyped(kind TokenKind, subject string, ttl time.Duration, opts []SignOption) (string, error) {
+// 生成并回传（jti 出口集中在库层，#97/#218）。
+func (m *Manager) issueTyped(kind TokenKind, subject string, ttl time.Duration, opts []SignOption) (string, string, error) {
 	all := make([]SignOption, 0, len(opts)+4)
 	all = append(all, opts...)
 	all = append(all, WithSubject(subject), WithTTL(ttl), withTokenType(string(kind)))
-	if !setsJTI(opts) {
-		jti, err := uidgen.RandomHexE(16)
-		if err != nil {
-			return "", bizerrors.Wrapf(err, "生成 jti")
-		}
-		all = append(all, WithJTI(jti))
-	}
-	return m.codec.sign(all...)
-}
-
-// setsJTI 探测用户选项是否显式设置了 jti（显式值优先于自动生成）。
-// 选项是纯赋值闭包，探测式应用与真实签发同效；WithTTL(0) 之类的 panic 选项
-// 在探测时同样 panic，与直接签发的可观测行为一致。
-func setsJTI(opts []SignOption) bool {
+	// 单次探测：显式 jti 优先（用户选项语义不变），缺省自动生成并回传。
 	probe := &signOptions{claims: map[string]any{}}
 	for _, opt := range opts {
 		opt(probe)
 	}
-	return probe.jti != ""
+	jti := probe.jti
+	if jti == "" {
+		generated, err := uidgen.RandomHexE(16)
+		if err != nil {
+			return "", "", bizerrors.Wrapf(err, "生成 jti")
+		}
+		jti = generated
+		all = append(all, WithJTI(jti))
+	}
+	tok, err := m.codec.sign(all...)
+	if err != nil {
+		return "", "", err
+	}
+	return tok, jti, nil
 }
 
 // nonEmptyAud 过滤受众里的空串（Refresh 的 aud 继承专用，#148）。

@@ -404,10 +404,11 @@ func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*Token
 	if len(u.Audience) > 0 {
 		opts = append(opts, jwt.WithAudienceClaims(u.Audience...))
 	}
-	access, refresh, err := f.jwt.IssuePair(u.ID, f.ttlAccess, f.ttlRefresh, opts...)
+	kp, err := f.jwt.IssuePairWithJTI(u.ID, f.ttlAccess, f.ttlRefresh, opts...)
 	if err != nil {
 		return nil, bizerrors.Wrapf(err, "auth: 签发令牌对失败")
 	}
+	access, refresh := kp.Access, kp.Refresh
 	// 回读 refresh 取 jti（Manager.IssuePair 的自动 jti 各自独立，会话登记
 	// 需要 refresh 的 jti 对账；签发产物自证，回读只做提取）。
 	rc, err := f.jwt.ParseTyped(jwt.TokenRefresh, refresh, slices.Clone(f.parseOpts)...)
@@ -422,18 +423,26 @@ func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*Token
 		revokeErr := f.revokePair(ctx, "auth: 回收无主令牌", access, refresh)
 		return nil, errors.Join(bizerrors.Wrapf(err, "auth: 回读签发产物失败"), revokeErr)
 	}
+	// access jti 直接取签发结果（#218）：会话登记带 AccessJTI 后，管理端可按
+	// access jti 反查/强踢。不回读解析——签发时已过期/时钟注入（WithIssuedAt）
+	// 等合法形态会让复验报 token expired，把成功签发误判成失败。
 	sid, err := sessionIDGen()
 	if err != nil {
 		revokeErr := f.revokePair(ctx, "auth: 回收无主令牌", access, refresh)
 		return nil, errors.Join(err, revokeErr)
 	}
+	// 用户名从 User.Claims 注入（kitx 不解析业务用户表，#218）——调用方未提供
+	// username 时为空串，Session.Username 可空。
+	username, _ := u.Claims["username"].(string)
 	sess := authz.Session{
 		ID:          sid,
 		UserID:      u.ID,
 		Device:      meta.Device,
 		IP:          meta.IP,
 		UA:          meta.UA,
+		Username:    username,
 		RefreshJTI:  rc.ID,
+		AccessJTI:   kp.AccessJTI,
 		AccessHash:  authz.TokenHash(access),
 		RefreshHash: authz.TokenHash(refresh),
 		LoginAt:     f.now(),

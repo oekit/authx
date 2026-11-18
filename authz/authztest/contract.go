@@ -366,6 +366,119 @@ func RunRegistry(t *testing.T, newStore StoreFactory) {
 		}
 	})
 
+	t.Run("GetByIDAndJTI", func(t *testing.T) {
+		reg, _ := newRegistry(t)
+		s := session("s-1", "u-1", "r-1")
+		s.Username = "alice"
+		if err := reg.Register(ctx, s, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		got, err := reg.GetByID(ctx, s.ID)
+		if err != nil || got.ID != s.ID || got.Username != "alice" || got.AccessJTI == "" {
+			t.Fatalf("GetByID = %+v err=%v, want username=alice/AccessJTI 非空", got, err)
+		}
+		for _, jti := range []string{s.RefreshJTI, s.AccessJTI} {
+			byJTI, err := reg.GetByJTI(ctx, jti)
+			if err != nil || byJTI.ID != s.ID {
+				t.Fatalf("GetByJTI(%q) = %+v err=%v", jti, byJTI, err)
+			}
+		}
+		if _, err := reg.GetByID(ctx, "missing"); !errors.Is(err, authz.ErrSessionNotFound) {
+			t.Fatalf("GetByID(missing) error = %v, want ErrSessionNotFound", err)
+		}
+		if _, err := reg.GetByJTI(ctx, "missing"); !errors.Is(err, authz.ErrSessionNotFound) {
+			t.Fatalf("GetByJTI(missing) error = %v, want ErrSessionNotFound", err)
+		}
+	})
+
+	t.Run("ListAll", func(t *testing.T) {
+		reg, _ := newRegistry(t)
+		s1 := session("s-1", "u-1", "r-1")
+		s2 := session("s-2", "u-2", "r-2")
+		s2.LoginAt = s1.LoginAt.Add(time.Minute)
+		// 逆序登记，验证排序与跨用户汇总
+		for _, s := range []authz.Session{s2, s1} {
+			if err := reg.Register(ctx, s, time.Hour); err != nil {
+				t.Fatalf("Register(%s) error = %v", s.ID, err)
+			}
+		}
+		list, err := reg.ListAll(ctx)
+		if err != nil || len(list) != 2 || list[0].ID != "s-1" || list[1].ID != "s-2" {
+			t.Fatalf("ListAll = %v err=%v, want [s-1 s-2]", ids(list), err)
+		}
+	})
+
+	t.Run("DuplicateJTIRejected", func(t *testing.T) {
+		reg, _ := newRegistry(t)
+		s1 := session("s-1", "u-1", "r-1")
+		s1.AccessJTI = "same-jti"
+		if err := reg.Register(ctx, s1, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		s2 := session("s-2", "u-2", "r-2")
+		s2.AccessJTI = "same-jti"
+		if err := reg.Register(ctx, s2, time.Hour); err == nil {
+			t.Fatal("重复 jti 必须报错（签发面重复 jti 是严重缺陷）")
+		}
+	})
+
+	t.Run("KickClearsJTIAndAllIndexes", func(t *testing.T) {
+		reg, _ := newRegistry(t)
+		s := session("s-1", "u-1", "r-1")
+		if err := reg.Register(ctx, s, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reg.Kick(ctx, s.ID); err != nil {
+			t.Fatal(err)
+		}
+		for _, jti := range []string{s.RefreshJTI, s.AccessJTI} {
+			if _, err := reg.GetByJTI(ctx, jti); !errors.Is(err, authz.ErrSessionNotFound) {
+				t.Fatalf("强踢后 GetByJTI(%q) error = %v, want ErrSessionNotFound", jti, err)
+			}
+		}
+		if list, _ := reg.ListAll(ctx); len(list) != 0 {
+			t.Fatalf("强踢后 ListAll = %v, want 空", ids(list))
+		}
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		reg, rev := newRegistry(t)
+		s := session("s-1", "u-1", "r-1")
+		if err := reg.Register(ctx, s, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := reg.Delete(ctx, s.ID); err != nil || !ok {
+			t.Fatalf("Delete() = (%v, %v), want (true, nil)", ok, err)
+		}
+		if _, err := reg.GetByID(ctx, s.ID); !errors.Is(err, authz.ErrSessionNotFound) {
+			t.Fatalf("Delete 后 GetByID error = %v, want ErrSessionNotFound", err)
+		}
+		for _, jti := range []string{s.RefreshJTI, s.AccessJTI} {
+			if _, err := reg.GetByJTI(ctx, jti); !errors.Is(err, authz.ErrSessionNotFound) {
+				t.Fatalf("Delete 后 GetByJTI(%q) error = %v, want ErrSessionNotFound", jti, err)
+			}
+		}
+		if _, err := reg.GetByRefreshHash(ctx, s.RefreshHash); !errors.Is(err, authz.ErrSessionNotFound) {
+			t.Fatalf("Delete 后 GetByRefreshHash error = %v, want ErrSessionNotFound", err)
+		}
+		if list, _ := reg.ListByUser(ctx, "u-1"); len(list) != 0 {
+			t.Fatalf("Delete 后 ListByUser = %v, want 空", ids(list))
+		}
+		if list, _ := reg.ListAll(ctx); len(list) != 0 {
+			t.Fatalf("Delete 后 ListAll = %v, want 空", ids(list))
+		}
+		// 与 Kick 的差异：Delete 不拉黑。
+		if revoked, err := rev.Revoked(ctx, s.AccessHash); err != nil || revoked {
+			t.Fatalf("Delete 不得拉黑 access hash（revoked=%v err=%v）", revoked, err)
+		}
+		if revoked, err := rev.Revoked(ctx, s.RefreshHash); err != nil || revoked {
+			t.Fatalf("Delete 不得拉黑 refresh hash（revoked=%v err=%v）", revoked, err)
+		}
+		if ok, err := reg.Delete(ctx, s.ID); err != nil || ok {
+			t.Fatalf("二次 Delete() = (%v, %v), want (false, nil)", ok, err)
+		}
+	})
+
 	t.Run("KickNotFound", func(t *testing.T) {
 		reg, _ := newRegistry(t)
 		kicked, err := reg.Kick(ctx, "s-missing")
@@ -603,6 +716,7 @@ func session(id, user, refreshToken string) authz.Session {
 		IP:          "198.51.100.7",
 		UA:          "agent-x",
 		RefreshJTI:  "jti-" + id,
+		AccessJTI:   "ajti-" + id,
 		AccessHash:  authz.TokenHash("access-" + id),
 		RefreshHash: authz.TokenHash(refreshToken),
 		LoginAt:     time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC),
