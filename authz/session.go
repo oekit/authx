@@ -34,7 +34,8 @@ type Session struct {
 	// RefreshJTI 会话对应的 refresh 令牌 jti（管理端展示与对账；可空）。
 	RefreshJTI string
 	// AccessJTI access 令牌的 jti（管理端按 jti 反查/强踢；#218）。由编排层
-	// 从新签 access 令牌回读填充；可空（未登记时 jti 索引跳过该路）。
+	// 从签发结果直出填充（IssuePairWithJTI，不回读解析）；可空（未登记时
+	// jti 索引跳过该路）。
 	AccessJTI string
 	// AccessHash access 令牌的 TokenHash（强踢拉黑口径；可空——空则 Kick 跳过该路）。
 	AccessHash string

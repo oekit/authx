@@ -409,23 +409,12 @@ func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*Token
 		return nil, bizerrors.Wrapf(err, "auth: 签发令牌对失败")
 	}
 	access, refresh := kp.Access, kp.Refresh
-	// 回读 refresh 取 jti（Manager.IssuePair 的自动 jti 各自独立，会话登记
-	// 需要 refresh 的 jti 对账；签发产物自证，回读只做提取）。
-	rc, err := f.jwt.ParseTyped(jwt.TokenRefresh, refresh, slices.Clone(f.parseOpts)...)
-	if err != nil {
-		// 回读失败同样回收（#154）：双令牌此时已签出、未登记——与同函数另
-		// 两条失败分支（会话 ID 生成失败 / Register 失败）同一不变量「签发与
-		// 登记一次落地」，不放行「签了名但不可吊销」的无主令牌（RotateRefresh
-		// 的失败路径注释正是基于此不变量）。回读走 parseOpts 全量校验，签发/
-		// 解析配置不对称（签发无 issuer 而解析钉 ExpectedIssuer、签发
-		// WithNoExpiry 而解析未配 WithAllowNoExpiry 等）时必失败，不能让每次
-		// 失败都静默漏出一对无主令牌。
-		revokeErr := f.revokePair(ctx, "auth: 回收无主令牌", access, refresh)
-		return nil, errors.Join(bizerrors.Wrapf(err, "auth: 回读签发产物失败"), revokeErr)
-	}
-	// access jti 直接取签发结果（#218）：会话登记带 AccessJTI 后，管理端可按
-	// access jti 反查/强踢。不回读解析——签发时已过期/时钟注入（WithIssuedAt）
-	// 等合法形态会让复验报 token expired，把成功签发误判成失败。
+	// 两枚 jti 均直接取签发结果（#218 → #225 补齐 refresh 半边）：签发时已
+	// 过期/时钟注入（WithIssuedAt）等合法形态会让复验报 token expired，把
+	// 成功签发误判成失败——issueTail 旧实现回读 refresh 取 jti，正是这个
+	// 误报面（IssuePair/RotateRefresh 共用本函数均受影响）。TokenPair 的
+	// RefreshJTI 由 issueTyped 签发路径直出，与回读所得恒等（同一次
+	// WithJTI 的值），回读是纯多余的一次复验。
 	sid, err := sessionIDGen()
 	if err != nil {
 		revokeErr := f.revokePair(ctx, "auth: 回收无主令牌", access, refresh)
@@ -441,7 +430,7 @@ func (f *Flow) issueTail(ctx context.Context, u *User, meta SessionMeta) (*Token
 		IP:          meta.IP,
 		UA:          meta.UA,
 		Username:    username,
-		RefreshJTI:  rc.ID,
+		RefreshJTI:  kp.RefreshJTI,
 		AccessJTI:   kp.AccessJTI,
 		AccessHash:  authz.TokenHash(access),
 		RefreshHash: authz.TokenHash(refresh),

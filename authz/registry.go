@@ -38,15 +38,11 @@ type storedSession struct {
 	Generation string  `json:"generation"`
 }
 
-// refreshMount 是 refresh 索引的值：会话 ID + 登记代次。
-type refreshMount struct {
-	ID         string `json:"id"`
-	Generation string `json:"generation"`
-}
-
-// jtiMount 是 jti 索引的值：会话 ID + 登记代次（#218）——与 refreshMount 同构，
-// 代次用于清理期 ABA 复核（同 ID 重建后旧索引不得误删新挂载）。
-type jtiMount struct {
+// indexMount 是 refresh/jti 两族索引的公共值形态：会话 ID + 登记代次（#226
+// 合并——原 refreshMount/jtiMount 逐字段同构，编解码与挂载骨架随之一并单源）。
+// 代次用于清理期 ABA 复核（同 ID 重建后旧索引不得误删新挂载）。两族索引的
+// wire 格式本就逐字相同（{"id","generation"}），合并不影响存量数据。
+type indexMount struct {
 	ID         string `json:"id"`
 	Generation string `json:"generation"`
 }
@@ -59,8 +55,8 @@ type jtiMount struct {
 // 键布局（prefix 由 WithStorePrefix 配置，缺省 authz:sess:）：
 //
 //	<prefix>id:<sessionID>         主键（storedSession JSON：Session + 登记代次）
-//	<prefix>refresh:<refreshHash>  refresh 反查/唯一挂载（refreshMount JSON）
-//	<prefix>jti:<jti>              access/refresh jti 反查（jtiMount JSON，#218）
+//	<prefix>refresh:<refreshHash>  refresh 反查/唯一挂载（indexMount JSON）
+//	<prefix>jti:<jti>              access/refresh jti 反查（indexMount JSON，#218）
 //	<prefix>user:<userID>          用户索引集合（成员=sessionID）
 //	<prefix>all                    全量会话索引集合（成员=sessionID，#218）
 //	<prefix>lock:id:<sessionID>    会话操作锁（SetNX + TTL）
@@ -177,7 +173,7 @@ func (r *StoreRegistry) GetByRefreshHash(ctx context.Context, refreshHash string
 	if !ok {
 		return Session{}, ErrSessionNotFound
 	}
-	mount, err := decodeRefreshMount(raw)
+	mount, err := decodeMount(raw)
 	if err != nil {
 		return Session{}, bizerrors.Wrapf(err, "authz: refreshHash 索引数据损坏")
 	}
@@ -231,7 +227,7 @@ func (r *StoreRegistry) GetByJTI(ctx context.Context, jti string) (Session, erro
 	if !ok {
 		return Session{}, ErrSessionNotFound
 	}
-	mount, err := decodeJTIMount(raw)
+	mount, err := decodeMount(raw)
 	if err != nil {
 		return Session{}, bizerrors.Wrapf(err, "authz: jti 索引数据损坏")
 	}
@@ -457,7 +453,8 @@ func (r *StoreRegistry) KickUser(ctx context.Context, userID string) (int, error
 
 // mountRefresh 在 refresh 锁内唯一挂载 refreshHash（调用方已持有 ID 锁）。
 // 已挂载到**同代次**的活会话 ⇒ 报错；挂载到已过期会话/旧代次残留 ⇒ 清残后
-// 重试一次。
+// 重试一次。骨架与错误文案经 mountIndexUnique 单源（#226 收敛，与 jti 挂载
+// 原为逐字同构的两份）；refresh 侧多一层 refresh 锁（挂载/强踢互斥）。
 func (r *StoreRegistry) mountRefresh(ctx context.Context, id, refreshHash, gen string, ttl time.Duration) error {
 	release, acquired, err := r.acquireLock(ctx, r.refreshLockKey(refreshHash))
 	if err != nil {
@@ -468,42 +465,52 @@ func (r *StoreRegistry) mountRefresh(ctx context.Context, id, refreshHash, gen s
 	}
 	defer release()
 
-	value, err := encodeRefreshMount(refreshMount{ID: id, Generation: gen})
+	value, err := encodeMount(indexMount{ID: id, Generation: gen})
 	if err != nil {
 		return bizerrors.Wrapf(err, "authz: refreshHash 索引序列化失败")
 	}
-	key := r.refreshKey(refreshHash)
+	return r.mountIndexUnique(ctx, "refreshHash", r.refreshKey(refreshHash), value, ttl,
+		func(cur indexMount) error {
+			return bizerrors.Newf("authz: RefreshHash 已挂在会话 %q 上——同一 refresh 不得挂两枚会话（登记面亦是防重放面）", cur.ID)
+		})
+}
+
+// mountIndexUnique 是 mountRefresh/mountJTIs 的共同骨架（#226 收敛）：
+// SetNX → 占用则 Get+解码 → 活会话同代次 ⇒ onOccupied（两族占用语义不同：
+// refresh 唯一挂载 vs jti 全局唯一，文案由回调注入）；已过期会话/旧代次
+// 残留 ⇒ 清残后重试一次。
+func (r *StoreRegistry) mountIndexUnique(ctx context.Context, what, key, value string, ttl time.Duration, onOccupied func(cur indexMount) error) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		ok, err := r.store.SetNX(ctx, key, value, ttl)
 		if err != nil {
-			return bizerrors.Wrapf(err, "authz: 挂载 refreshHash 失败")
+			return bizerrors.Wrapf(err, "authz: 挂载 %s 索引失败", what)
 		}
 		if ok {
 			return nil
 		}
 		raw, exists, err := r.store.Get(ctx, key)
 		if err != nil {
-			return bizerrors.Wrapf(err, "authz: 查询 refreshHash 索引失败")
+			return bizerrors.Wrapf(err, "authz: 查询 %s 索引失败", what)
 		}
 		if exists {
-			cur, err := decodeRefreshMount(raw)
+			cur, err := decodeMount(raw)
 			if err != nil {
-				return bizerrors.Wrapf(err, "authz: refreshHash 索引数据损坏")
+				return bizerrors.Wrapf(err, "authz: %s 索引数据损坏", what)
 			}
 			stored, live, err := r.getSession(ctx, cur.ID)
 			if err != nil {
 				return err
 			}
 			if live && stored.Generation == cur.Generation {
-				return bizerrors.Newf("authz: RefreshHash 已挂在会话 %q 上——同一 refresh 不得挂两枚会话（登记面亦是防重放面）", cur.ID)
+				return onOccupied(cur)
 			}
 		}
 		// 已过期会话或旧代次残留：清残后重试。
 		if _, err := r.store.Del(ctx, key); err != nil {
-			return bizerrors.Wrapf(err, "authz: 清理过期 refreshHash 索引失败")
+			return bizerrors.Wrapf(err, "authz: 清理过期 %s 索引失败", what)
 		}
 	}
-	return bizerrors.New("authz: RefreshHash 挂载竞争失败，请重试")
+	return bizerrors.Newf("authz: %s 索引挂载竞争失败，请重试", what)
 }
 
 // rollbackRegistration 回滚登记失败留下的主键/用户/全量/jti 索引（尽力而为，
@@ -536,49 +543,19 @@ func (r *StoreRegistry) rollbackRegistration(ctx context.Context, s Session, gen
 // 严重缺陷，宁可登记失败也不静默覆盖）；挂到已过期会话/旧代次残留 ⇒ 清残后
 // 重试一次（与 mountRefresh 同款）。
 func (r *StoreRegistry) mountJTIs(ctx context.Context, s Session, gen string, ttl time.Duration) error {
+	value, err := encodeMount(indexMount{ID: s.ID, Generation: gen})
+	if err != nil {
+		return bizerrors.Wrapf(err, "authz: jti 索引序列化失败")
+	}
 	for _, jti := range []string{s.RefreshJTI, s.AccessJTI} {
 		if jti == "" {
 			continue
 		}
-		key := r.jtiKey(jti)
-		value, err := encodeJTIMount(jtiMount{ID: s.ID, Generation: gen})
-		if err != nil {
-			return bizerrors.Wrapf(err, "authz: jti 索引序列化失败")
-		}
-		mounted := false
-		for attempt := 0; attempt < 2 && !mounted; attempt++ {
-			ok, err := r.store.SetNX(ctx, key, value, ttl)
-			if err != nil {
-				return bizerrors.Wrapf(err, "authz: 挂载 jti 索引失败")
-			}
-			if ok {
-				mounted = true
-				break
-			}
-			raw, exists, err := r.store.Get(ctx, key)
-			if err != nil {
-				return bizerrors.Wrapf(err, "authz: 查询 jti 索引失败")
-			}
-			if exists {
-				cur, err := decodeJTIMount(raw)
-				if err != nil {
-					return bizerrors.Wrapf(err, "authz: jti 索引数据损坏")
-				}
-				stored, live, err := r.getSession(ctx, cur.ID)
-				if err != nil {
-					return err
-				}
-				if live && stored.Generation == cur.Generation {
-					return bizerrors.Newf("authz: jti %q 已挂在会话 %q 上——jti 必须全局唯一（签发面重复 jti 是严重缺陷）", jti, cur.ID)
-				}
-			}
-			// 已过期会话或旧代次残留：清残后重试。
-			if _, err := r.store.Del(ctx, key); err != nil {
-				return bizerrors.Wrapf(err, "authz: 清理过期 jti 索引失败")
-			}
-		}
-		if !mounted {
-			return bizerrors.New("authz: jti 索引挂载竞争失败，请重试")
+		if err := r.mountIndexUnique(ctx, "jti", r.jtiKey(jti), value, ttl,
+			func(cur indexMount) error {
+				return bizerrors.Newf("authz: jti %q 已挂在会话 %q 上——jti 必须全局唯一（签发面重复 jti 是严重缺陷）", jti, cur.ID)
+			}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -622,7 +599,7 @@ func (r *StoreRegistry) cleanupJTIIndexes(ctx context.Context, stored storedSess
 		if !ok {
 			continue
 		}
-		mount, err := decodeJTIMount(raw)
+		mount, err := decodeMount(raw)
 		if err != nil {
 			errs = append(errs, bizerrors.Wrapf(err, "解析 jti 索引 %q", jti))
 			continue
@@ -658,7 +635,7 @@ func (r *StoreRegistry) cleanupRefreshIndex(ctx context.Context, stored storedSe
 	if !ok {
 		return
 	}
-	cur, err := decodeRefreshMount(raw)
+	cur, err := decodeMount(raw)
 	if err != nil {
 		log.CtxWarn(ctx, "强踢后解析 refresh 索引失败（跳过删除）", "session_id", stored.Session.ID, logx.ErrKey, err)
 		return
@@ -697,8 +674,9 @@ func newSessionGeneration() (string, error) {
 	return gen, nil
 }
 
-// encodeRefreshMount / decodeRefreshMount 是 refresh 索引值的内部编解码。
-func encodeRefreshMount(m refreshMount) (string, error) {
+// encodeMount / decodeMount 是 refresh/jti 索引值的公共编解码（#226 合并，
+// 原为两份除错误文案外逐字重复的实现）。
+func encodeMount(m indexMount) (string, error) {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return "", err
@@ -706,33 +684,13 @@ func encodeRefreshMount(m refreshMount) (string, error) {
 	return string(b), nil
 }
 
-func decodeRefreshMount(raw string) (refreshMount, error) {
-	var m refreshMount
+func decodeMount(raw string) (indexMount, error) {
+	var m indexMount
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return refreshMount{}, err
+		return indexMount{}, err
 	}
 	if m.ID == "" || m.Generation == "" {
-		return refreshMount{}, bizerrors.New("refreshMount 缺 ID/Generation")
-	}
-	return m, nil
-}
-
-// encodeJTIMount / decodeJTIMount 是 jti 索引值的内部编解码（#218）。
-func encodeJTIMount(m jtiMount) (string, error) {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
-func decodeJTIMount(raw string) (jtiMount, error) {
-	var m jtiMount
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return jtiMount{}, err
-	}
-	if m.ID == "" || m.Generation == "" {
-		return jtiMount{}, bizerrors.New("jtiMount 缺 ID/Generation")
+		return indexMount{}, bizerrors.New("indexMount 缺 ID/Generation")
 	}
 	return m, nil
 }
