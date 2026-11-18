@@ -324,16 +324,22 @@ func TestSignWithNow(t *testing.T) {
 	}
 }
 
-// #64：WithNow(nil) 必须当场 panic——静默回落真实时钟会让 iat 无声漂移。
-func TestWithNowNilPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("WithNow(nil) must panic")
-		}
-	}()
+// #538：WithNow(nil) 不再 panic——按 Option 总则②显式回退默认签发时钟
+// （time.Now，iat 区间断言；假时钟注入路径由 TestSignWithNow 钉住），与
+// pkg/cache/pkg/webhook 同口径。
+func TestWithNowNilFallback(t *testing.T) {
 	kp := newTestKeyPair(t)
-	_, _ = Sign(kp, WithNow(nil))
+	before := time.Now().Unix()
+	token, err := Sign(kp, WithSubject("u"), WithNow(nil))
+	after := time.Now().Unix()
+	if err != nil {
+		t.Fatalf("Sign() error = %v", err)
+	}
+	payload := decodeSegment(t, token, 1)
+	iat := int64(payload["iat"].(float64))
+	if iat < before || iat > after {
+		t.Fatalf("WithNow(nil) 未回退默认时钟：iat = %d, want within [%d, %d]", iat, before, after)
+	}
 }
 
 // #64：缺省行为不变——无时钟选项时 iat 取真实当前时刻（区间断言），且缺省 ttl 仍为 24h。

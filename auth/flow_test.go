@@ -120,12 +120,19 @@ func TestNewFlowValidation(t *testing.T) {
 	if _, err := NewFlow(m, reg, rev, WithTTL(time.Minute, time.Hour)); err != nil {
 		t.Fatalf("合法构造 error = %v", err)
 	}
-	defer func() {
-		if recover() == nil {
-			t.Fatal("WithClock(nil) 必须 panic")
-		}
-	}()
-	_, _ = NewFlow(m, reg, rev, WithTTL(time.Minute, time.Hour), WithClock(nil))
+	// #538：WithClock(nil) 不再 panic——按 Option 总则②显式回退默认时钟
+	// （NewFlow 的 time.Now 缺省，区间断言；假时钟注入路径由 newTestFlow 及
+	// 各场景测试钉住），与 pkg/cache/pkg/webhook 同口径。
+	before := time.Now()
+	f2, err := NewFlow(m, reg, rev, WithTTL(time.Minute, time.Hour), WithClock(nil))
+	if err != nil {
+		t.Fatalf("WithClock(nil) 回退默认构造 error = %v", err)
+	}
+	got := f2.now() // nil 若被存进实例，此处即为 nil 调用 panic——回退本身也被钉住
+	after := time.Now()
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("WithClock(nil) 未回退默认时钟 time.Now：got %v, want within [%v, %v]", got, before, after)
+	}
 }
 
 // IssuePair 签发尾段：分型/角色/业务声明落位，会话登记（哈希=jti 对账）一次落地。

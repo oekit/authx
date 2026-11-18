@@ -234,14 +234,17 @@ func TestMemRevokerConcurrency(t *testing.T) {
 	}
 }
 
-// 时钟注入防呆（WithNow（#64）同款纪律）。
-func TestMemRevokerClockOptionPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("WithRevokerClock(nil) 必须 panic")
-		}
-	}()
-	_ = NewMemRevoker(WithRevokerClock(nil))
+// #538：WithRevokerClock(nil) 不再 panic——按 Option 总则②显式回退默认时钟
+// （time.Now，区间断言；假时钟注入路径由上方时钟驱动的 TTL 边界测试钉住），
+// 与 pkg/cache/pkg/webhook 同口径。
+func TestMemRevokerClockOptionNilFallback(t *testing.T) {
+	before := time.Now()
+	r := NewMemRevoker(WithRevokerClock(nil))
+	got := r.now() // nil 若被存进实例，此处即为 nil 调用 panic——回退本身也被钉住
+	after := time.Now()
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("WithRevokerClock(nil) 未回退默认时钟 time.Now：got %v, want within [%v, %v]", got, before, after)
+	}
 }
 
 // 零值 at fail-fast（#188）：与 Revoke 对非正 remaining 的 #65 纪律同款。

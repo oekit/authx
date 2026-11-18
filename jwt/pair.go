@@ -250,8 +250,8 @@ func (m *Manager) issueTyped(kind TokenKind, subject string, ttl time.Duration, 
 }
 
 // setsJTI 探测用户选项是否显式设置了 jti（显式值优先于自动生成）。
-// 选项是纯赋值闭包，探测式应用与真实签发同效；WithTTL(0)/WithNow(nil) 之类
-// 的 panic 选项在探测时同样 panic，与直接签发的可观测行为一致。
+// 选项是纯赋值闭包，探测式应用与真实签发同效；WithTTL(0) 之类的 panic 选项
+// 在探测时同样 panic，与直接签发的可观测行为一致。
 func setsJTI(opts []SignOption) bool {
 	probe := &signOptions{claims: map[string]any{}}
 	for _, opt := range opts {

@@ -85,12 +85,16 @@ var _ SessionStore = (*MemSessionStore)(nil)
 // MemSessionStoreOption 是 NewMemSessionStore 的函数选项。
 type MemSessionStoreOption func(*MemSessionStore)
 
-// WithSessionStoreClock 注入内存 store 时钟（测试确定性 TTL 边界；f 为 nil
-// 直接 panic——静默回落 time.Now() 会让 TTL 无声漂移，WithRevokerClock 同款纪律）。
+// WithSessionStoreClock 注入内存 store 时钟（测试确定性 TTL 边界；缺省
+// time.Now）。f 为 nil 按仓规 Option 总则②显式回退默认时钟（不把 nil 存进
+// 实例），与 pkg/cache/pkg/webhook 的 WithClock(nil) 口径统一（#538）。
+//
+// 行为变更（#538）：此前 WithSessionStoreClock(nil) 在构造期 panic，现按默认
+// 时钟正常构造。
 func WithSessionStoreClock(f func() time.Time) MemSessionStoreOption {
 	return func(m *MemSessionStore) {
 		if f == nil {
-			panic("authz: WithSessionStoreClock 的时钟函数不能为 nil——静默回落 time.Now() 会让 TTL 无声漂移")
+			return
 		}
 		m.now = f
 	}
