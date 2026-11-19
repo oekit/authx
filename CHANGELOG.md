@@ -1,3 +1,8 @@
+## [v0.12.2] — 2026-11-20
+
+- fix(authz): 21 个公开入口补 nil-ctx 兜底（StoreRegistry 9 口/MemRevoker 4 口/MemSessionStore 8 口）——此前 nil ctx 即 panic；#231 复查发现 issue 列的 8 处漏计两族（#231）
+test(authz): authztest 契约套件补 NilCtxTreatedAsBackground 场景（逐入口 nil 不 panic 且 Background 语义真实落地），#548 契约化思路铺到 authz（#231）
+
 ## [v0.12.1] — 2026-11-19
 
 - 第二轮重复逻辑深挖审计（2026-11-19）kitx 修复与收敛：
