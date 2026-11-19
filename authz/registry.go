@@ -10,6 +10,7 @@ import (
 
 	"github.com/oekit/kitx/uidgen"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
 	bizerrors "github.com/oekit/pkg/errors"
 )
 
@@ -108,6 +109,8 @@ func NewStoreRegistry(rev Revoker, store SessionStore, opts ...StoreRegistryOpti
 
 // Register 登记会话（契约见 SessionRegistry）。
 func (r *StoreRegistry) Register(ctx context.Context, s Session, ttl time.Duration) error {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -163,6 +166,8 @@ func (r *StoreRegistry) Register(ctx context.Context, s Session, ttl time.Durati
 
 // GetByRefreshHash 按 refresh 哈希查会话（契约见 SessionRegistry）。
 func (r *StoreRegistry) GetByRefreshHash(ctx context.Context, refreshHash string) (Session, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return Session{}, err
 	}
@@ -196,6 +201,8 @@ func (r *StoreRegistry) GetByRefreshHash(ctx context.Context, refreshHash string
 
 // GetByID 按会话 ID 直查（契约见 SessionRegistry）。
 func (r *StoreRegistry) GetByID(ctx context.Context, id string) (Session, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return Session{}, err
 	}
@@ -214,6 +221,8 @@ func (r *StoreRegistry) GetByID(ctx context.Context, id string) (Session, error)
 
 // GetByJTI 按 access/refresh jti 反查会话（契约见 SessionRegistry）。
 func (r *StoreRegistry) GetByJTI(ctx context.Context, jti string) (Session, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return Session{}, err
 	}
@@ -252,6 +261,8 @@ func (r *StoreRegistry) GetByJTI(ctx context.Context, jti string) (Session, erro
 
 // ListByUser 枚举某用户的在线会话（契约见 SessionRegistry）。
 func (r *StoreRegistry) ListByUser(ctx context.Context, userID string) ([]Session, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -268,6 +279,8 @@ func (r *StoreRegistry) ListByUser(ctx context.Context, userID string) ([]Sessio
 // （不 SCAN 全键反推，避免给存储面加全表扫描）。存量会话的轮换/强踢不受
 // 影响（refreshHash 索引仍在）；管理端全量枚举只覆盖升级后登记的会话。
 func (r *StoreRegistry) ListAll(ctx context.Context) ([]Session, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -314,6 +327,8 @@ func (r *StoreRegistry) sessionsFromIDs(ctx context.Context, ids []string, keep 
 //	→ 重抢 ID 锁，按**代次**复核：代次已变/主键已不在 ⇒ 败方 (false, nil)
 //	→ 删主键（下线生效点）→ 尽力清理 refresh/用户索引 → (true, nil)
 func (r *StoreRegistry) Kick(ctx context.Context, id string) (bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -395,6 +410,8 @@ func (r *StoreRegistry) Kick(ctx context.Context, id string) (bool, error) {
 // OAuth 撤销端点先拉黑令牌），只需把登记下线。ID 锁内读快照 → 删主键 →
 // 清理 refresh/用户/全量/jti 索引（同一套 cleanupIndexes，代次复核防 ABA）。
 func (r *StoreRegistry) Delete(ctx context.Context, id string) (bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -429,6 +446,8 @@ func (r *StoreRegistry) Delete(ctx context.Context, id string) (bool, error) {
 
 // KickUser 强踢某用户全部在线会话（契约见 SessionRegistry）。
 func (r *StoreRegistry) KickUser(ctx context.Context, userID string) (int, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}

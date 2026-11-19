@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/oekit/kitx/pwd"
+	"github.com/oekit/pkg/contextx"
 	"github.com/oekit/pkg/encoding"
 	bizerrors "github.com/oekit/pkg/errors"
 )
@@ -127,6 +128,8 @@ func NewMemRevoker(opts ...MemRevokerOption) *MemRevoker {
 
 // Revoke 登记一条 token 级撤销（TTL=remaining）。
 func (m *MemRevoker) Revoke(ctx context.Context, hash string, remaining time.Duration) error {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -145,6 +148,8 @@ func (m *MemRevoker) Revoke(ctx context.Context, hash string, remaining time.Dur
 // Revoked 判定 token 级撤销（过期条目视为不在）。读路径不回删（RWMutex
 // 读锁；物理回收交给 Sweep）。
 func (m *MemRevoker) Revoked(ctx context.Context, hash string) (bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -164,6 +169,8 @@ func (m *MemRevoker) Revoked(ctx context.Context, hash string) (bool, error) {
 // 已经 fail-fast 的同款风险（#65 纪律）。确需「撤销一切历史」的语义请用
 // 显式截断点（如 time.Now()），不要让零值承担含义。
 func (m *MemRevoker) RevokeUser(ctx context.Context, userID string, at time.Time) error {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -187,6 +194,8 @@ func (m *MemRevoker) RevokeUser(ctx context.Context, userID string, at time.Time
 // 比较口径单点委托 pwd.TokenStaleBefore（#121 改密陈旧判定的同一份实现——
 // 两处各写一份秒截断比较正是 #119/#121 要消灭的漂移形态）。
 func (m *MemRevoker) RevokedUser(ctx context.Context, userID string, iat time.Time) (bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}

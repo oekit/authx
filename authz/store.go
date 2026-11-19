@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oekit/pkg/contextx"
 	bizerrors "github.com/oekit/pkg/errors"
 )
 
@@ -113,6 +114,8 @@ func NewMemSessionStore(opts ...MemSessionStoreOption) *MemSessionStore {
 
 // Get 返回键值（契约见 SessionStore）。
 func (m *MemSessionStore) Get(ctx context.Context, key string) (string, bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return "", false, err
 	}
@@ -127,6 +130,8 @@ func (m *MemSessionStore) Get(ctx context.Context, key string) (string, bool, er
 
 // SetNX 原子写入（契约见 SessionStore）。
 func (m *MemSessionStore) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -144,6 +149,8 @@ func (m *MemSessionStore) SetNX(ctx context.Context, key, value string, ttl time
 
 // Del 删除键（契约见 SessionStore；字符串键与集合键同一命名空间，均可删）。
 func (m *MemSessionStore) Del(ctx context.Context, key string) (bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -163,6 +170,8 @@ func (m *MemSessionStore) Del(ctx context.Context, key string) (bool, error) {
 
 // SAdd 加入集合并延长 TTL（契约见 SessionStore）。
 func (m *MemSessionStore) SAdd(ctx context.Context, key, member string, ttl time.Duration) error {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -185,6 +194,8 @@ func (m *MemSessionStore) SAdd(ctx context.Context, key, member string, ttl time
 
 // SRem 移除集合成员（契约见 SessionStore）。
 func (m *MemSessionStore) SRem(ctx context.Context, key, member string) error {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -203,6 +214,8 @@ func (m *MemSessionStore) SRem(ctx context.Context, key, member string) error {
 
 // SMembers 返回集合快照（契约见 SessionStore）。
 func (m *MemSessionStore) SMembers(ctx context.Context, key string) ([]string, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -221,6 +234,8 @@ func (m *MemSessionStore) SMembers(ctx context.Context, key string) ([]string, e
 
 // Expire 重设键过期时间（契约见 SessionStore）。
 func (m *MemSessionStore) Expire(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -241,6 +256,8 @@ func (m *MemSessionStore) Expire(ctx context.Context, key string, ttl time.Durat
 
 // TTL 返回剩余寿命（契约见 SessionStore）。
 func (m *MemSessionStore) TTL(ctx context.Context, key string) (time.Duration, bool, error) {
+	// #231：nil ctx 归一 Background，裸 ctx.Err() 对 nil 接口即 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}

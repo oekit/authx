@@ -7,7 +7,7 @@
 //   - RunStore：SessionStore 原语契约（Get/SetNX/Del/SAdd/SRem/SMembers/
 //     Expire/TTL 的返回值、TTL 语义、SetNX 原子性、集合 TTL 只延长不缩短）；
 //   - RunRegistry：基于 authz.NewStoreRegistry 的编排契约（重复 ID/refreshHash
-//     唯一挂载/Kick 三态/KickUser 聚合计数）。
+//     唯一挂载/Kick 三态/KickUser 聚合计数，含 nil ctx 兜底契约 #231）。
 //
 // 用法（下游 store 实现）：
 //
@@ -668,6 +668,99 @@ func RunRegistry(t *testing.T, newStore StoreFactory) {
 		}
 		if wins != 1 {
 			t.Fatalf("原子认领必须恰一胜（%d/2）——防重放拍板不靠时序运气", wins)
+		}
+	})
+
+	// NilCtxTreatedAsBackground 钉住「nil ctx 按 Background 处理，不得 nil
+	// 解引用 panic」（#231）：StoreRegistry 全部入口与 MemRevoker 全部入口
+	// 曾裸 ctx.Err()，ctx 为 nil 接口时第一行就 panic（形态对照 pkg/
+	// singleflighttest 契约的 runNilCtx）。本用例逐入口传 nil：既不得 panic，
+	// 也要按 Background 语义真实落地——写路径生效、读路径可查、三态照常返回。
+	// 用例放在套件里，下游每跑一次契约就复验一次框架层的 nil ctx 口径。
+	t.Run("NilCtxTreatedAsBackground", func(t *testing.T) {
+		reg, rev := newRegistry(t)
+		s := session("s-nil", "u-nil", "r-nil")
+
+		// 写路径：nil ctx 登记按 Background 落地。
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if err := reg.Register(nil, s, time.Hour); err != nil {
+			t.Fatalf("Register(nil) error = %v——nil ctx 必须按 Background 落地", err)
+		}
+
+		// 读路径逐入口：nil ctx 查询不得 panic，且能查到刚落地的会话。
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if got, err := reg.GetByID(nil, s.ID); err != nil || got.ID != s.ID {
+			t.Fatalf("GetByID(nil) = (%+v, %v)", got, err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if got, err := reg.GetByRefreshHash(nil, s.RefreshHash); err != nil || got.ID != s.ID {
+			t.Fatalf("GetByRefreshHash(nil) = (%+v, %v)", got, err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if got, err := reg.GetByJTI(nil, s.AccessJTI); err != nil || got.ID != s.ID {
+			t.Fatalf("GetByJTI(nil) = (%+v, %v)", got, err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if list, err := reg.ListByUser(nil, s.UserID); err != nil || len(list) != 1 || list[0].ID != s.ID {
+			t.Fatalf("ListByUser(nil) = (%v, %v)", ids(list), err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if list, err := reg.ListAll(nil); err != nil || len(list) != 1 || list[0].ID != s.ID {
+			t.Fatalf("ListAll(nil) = (%v, %v)", ids(list), err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if _, err := reg.GetByID(nil, "s-missing"); !errors.Is(err, authz.ErrSessionNotFound) {
+			t.Fatalf("GetByID(nil, missing) error = %v, want ErrSessionNotFound", err)
+		}
+
+		// Revoker 四入口：nil ctx 登记/判定撤销按 Background 工作。
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if err := rev.Revoke(nil, s.AccessHash, time.Hour); err != nil {
+			t.Fatalf("Revoke(nil) error = %v", err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if hit, err := rev.Revoked(nil, s.AccessHash); err != nil || !hit {
+			t.Fatalf("Revoked(nil) = (%v, %v), want (true, nil)", hit, err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if err := rev.RevokeUser(nil, s.UserID, time.Now().Add(time.Minute)); err != nil {
+			t.Fatalf("RevokeUser(nil) error = %v", err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if stale, err := rev.RevokedUser(nil, s.UserID, time.Now().Add(-time.Minute)); err != nil || !stale {
+			t.Fatalf("RevokedUser(nil) = (%v, %v), want (true, nil)", stale, err)
+		}
+
+		// 强踢/下线入口：nil ctx 完成三态落地。
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if kicked, err := reg.Kick(nil, s.ID); err != nil || !kicked {
+			t.Fatalf("Kick(nil) = (%v, %v), want (true, nil)", kicked, err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if _, err := reg.GetByID(nil, s.ID); !errors.Is(err, authz.ErrSessionNotFound) {
+			t.Fatalf("Kick(nil) 后 GetByID(nil) error = %v, want ErrSessionNotFound", err)
+		}
+		s2 := session("s-nil-2", "u-nil", "r-nil-2")
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if err := reg.Register(nil, s2, time.Hour); err != nil {
+			t.Fatalf("Register(nil) 二次 error = %v", err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if ok, err := reg.Delete(nil, s2.ID); err != nil || !ok {
+			t.Fatalf("Delete(nil) = (%v, %v), want (true, nil)", ok, err)
+		}
+		s3 := session("s-nil-3", "u-nil", "r-nil-3")
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if err := reg.Register(nil, s3, time.Hour); err != nil {
+			t.Fatalf("Register(nil) 三次 error = %v", err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if n, err := reg.KickUser(nil, s.UserID); err != nil || n != 1 {
+			t.Fatalf("KickUser(nil) = (%v, %v), want (1, nil)", n, err)
+		}
+		//nolint:staticcheck // SA1012：传 nil ctx 正是本契约的测试点
+		if list, err := reg.ListByUser(nil, s.UserID); err != nil || len(list) != 0 {
+			t.Fatalf("KickUser(nil) 后 ListByUser(nil) = (%v, %v), want 空", ids(list), err)
 		}
 	})
 }
