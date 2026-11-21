@@ -1,3 +1,12 @@
+## [v0.13.0] — 2026-11-21
+
+- 第三轮设计/缺陷审计（2026-11-21）kitx 修复：
+
+- fix: InitSnowflakeFromEnv 对 MACHINE_ID 缺失/非法改 fail-closed——**行为变更**：多副本同 machineID 重复主键是静默数据事故，静默回落 0 是最危险缺省；dev 单进程改用新增的 InitSnowflakeFromEnvAllowZero 显式 opt-in；SnowflakeID auto-init 警告 Debug→Warn（sync.Once）（#236）
+- fix: Kick 在「双 hash 拉黑已落地、重抢 ID 锁失败」分支由 (false,nil) 改返回 (false, ErrKickContended) 哨兵——消除会话幽灵态（管理端枚举得到、refresh 不可用、无错误可重试）；契约注释补该特例（#236）
+
+关联问题单：kitx#236。
+
 ## [v0.12.2] — 2026-11-20
 
 - fix(authz): 21 个公开入口补 nil-ctx 兜底（StoreRegistry 9 口/MemRevoker 4 口/MemSessionStore 8 口）——此前 nil ctx 即 panic；#231 复查发现 issue 列的 8 处漏计两族（#231）
