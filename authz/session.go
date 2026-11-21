@@ -9,6 +9,11 @@ import (
 // ErrSessionNotFound 表示会话不在登记表（未登记 / 已过期 / 已下线）。
 var ErrSessionNotFound = errors.New("authz: 会话不存在")
 
+// ErrKickContended 表示 Kick 已完成双 hash 拉黑，但重抢 ID 锁失败——
+// 会话登记项仍存活、未被删除（#236）。调用方应视为**可重试**的临时态：
+// 令牌已不可用（拉黑已落地），但登记尚未下线（管理端仍会枚举到该会话）。
+var ErrKickContended = errors.New("authz: Kick 已完成拉黑但登记未删除（并发认领败方，可重试）")
+
 // Session 是一条在线会话登记项（设备/会话维度，#119）。
 //
 // 登记表回答「某用户在哪些设备在线」（ListByUser → Device/IP/UA/LoginAt），
@@ -84,6 +89,10 @@ type SessionRegistry interface {
 	//   - (false, nil)：登记不存在（幂等强踢的常态 / 轮换竞态的败方 / 同 ID
 	//     会话已重建的 ABA 败方，#136）；
 	//   - (false, err)：拉黑或下线前置落地失败，登记**保留**（可重试）。
+	//
+	// 特例（#236）：拉黑已完整落地、但重枪 ID 锁失败时返回
+	// (false, ErrKickContended)——登记仍存活，调用方应视作可重试，不得
+	// 误当「登记不存在」的幂等成功。
 	//
 	// 原子认领（claim）是 refresh 轮换防重放的拍板点：并发轮换/强踢竞争同一
 	// 会话时恰有一个调用拿到 true，其余按败方拒绝——「旧 refresh 二次使用被拒」

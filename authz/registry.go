@@ -383,7 +383,11 @@ func (r *StoreRegistry) Kick(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	if !acquired {
-		return false, nil // 认领输给并发 Kick/Register：本调用不删键
+		// 拉黑已完整落地（上方双路 Revoke 全部成功），但登记项仍存活未删。
+		// 返回显式哨兵（#236）：调用方必须能区分「本就不在」与「已拉黑但
+		// 下线未完成」——后者可重试，按 (false,nil) 处理会让会话幽灵态
+		// （管理端枚举得到、refresh 却不可用）静默残留。
+		return false, ErrKickContended
 	}
 	defer idRelease()
 	cur, live, err := r.getSession(ctx, id)

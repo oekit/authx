@@ -124,8 +124,8 @@ func TestSnowflakeLogsFlowThroughLogxBackend(t *testing.T) {
 		t.Cleanup(resetForTest)
 		buf.Reset()
 		t.Setenv("MACHINE_ID", "")
-		if err := InitSnowflakeFromEnv(); err != nil {
-			t.Fatalf("InitSnowflakeFromEnv() error = %v", err)
+		if err := InitSnowflakeFromEnvAllowZero(); err != nil {
+			t.Fatalf("InitSnowflakeFromEnvAllowZero() error = %v", err)
 		}
 		out := buf.String()
 		if !strings.Contains(out, "MACHINE_ID not set") {
@@ -141,8 +141,8 @@ func TestSnowflakeLogsFlowThroughLogxBackend(t *testing.T) {
 		t.Cleanup(resetForTest)
 		buf.Reset()
 		t.Setenv("MACHINE_ID", "not-a-number")
-		if err := InitSnowflakeFromEnv(); err != nil {
-			t.Fatalf("InitSnowflakeFromEnv() error = %v", err)
+		if err := InitSnowflakeFromEnvAllowZero(); err != nil {
+			t.Fatalf("InitSnowflakeFromEnvAllowZero() error = %v", err)
 		}
 		out := buf.String()
 		if !strings.Contains(out, "invalid MACHINE_ID") {
