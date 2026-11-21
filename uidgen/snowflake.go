@@ -110,6 +110,9 @@ func WithOnClockBack(fn func(back time.Duration)) SnowflakeOption {
 //   - resetForTest 直接 Store(nil)，单步原子，无需持业务锁.
 var defaultSnowflake atomic.Pointer[Snowflake]
 
+// snowflakeAutoInitWarn 保证 auto-init 警告只报一次（#236）。
+var snowflakeAutoInitWarn sync.Once
+
 // InitSnowflake 初始化全局 Snowflake singleton（缺省容忍上限 5s，无回拨回调）.
 // machineID 必须在 [0, 1023] 范围. 多次调用：第一次生效，后续返错（防止误用）.
 //
@@ -139,17 +142,37 @@ func InitSnowflakeWith(machineID int64, opts ...SnowflakeOption) error {
 	return nil
 }
 
-// InitSnowflakeFromEnv 从 MACHINE_ID env 读 machineID，解析失败兜底 0.
-// 单进程 dev / 测试默认 0 够用；生产必须显式注入（e.g. docker-compose 配 0/1/2）.
+// InitSnowflakeFromEnv 从 MACHINE_ID env 读 machineID。
+//
+// **fail-closed（#236）**：MACHINE_ID 缺失或解析失败直接返回 error——
+// 多副本部署下各实例 machineID 相同会产重复 int64 主键（数据覆盖/唯一键
+// 冲突），静默回落 0 是最危险的缺省（与仓内 WithTTL(0) 等零值 fail-fast
+// 口径一致）。dev / 单进程场景需要「缺失回落 0」时显式改用
+// [InitSnowflakeFromEnvAllowZero]。
 func InitSnowflakeFromEnv() error {
 	raw := os.Getenv("MACHINE_ID")
 	if raw == "" {
-		log.Warn("uidgen: MACHINE_ID not set, defaulting to 0; set MACHINE_ID in production to avoid ID collisions")
+		return errors.New("uidgen: MACHINE_ID 未设置——生产必须显式注入（多副本同号会重复主键）；dev 请改用 InitSnowflakeFromEnvAllowZero")
+	}
+	mid, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fmt.Errorf("uidgen: MACHINE_ID 非法（%q）: %w", raw, err)
+	}
+	return InitSnowflake(mid)
+}
+
+// InitSnowflakeFromEnvAllowZero 是 [InitSnowflakeFromEnv] 的显式降级变体
+// （#236）：MACHINE_ID 缺失或非法时 Warn 后回落 0——仅供 dev / 单进程 /
+// 测试使用；多副本生产环境用它会重复主键，调用方须已知晓该风险。
+func InitSnowflakeFromEnvAllowZero() error {
+	raw := os.Getenv("MACHINE_ID")
+	if raw == "" {
+		log.Warn("uidgen: MACHINE_ID not set, defaulting to 0 (AllowZero variant); do not use in multi-replica production")
 		return InitSnowflake(0)
 	}
 	mid, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		log.Warn("uidgen: invalid MACHINE_ID, defaulting to 0", "value", raw, logx.ErrKey, err)
+		log.Warn("uidgen: invalid MACHINE_ID, defaulting to 0 (AllowZero variant)", "value", raw, logx.ErrKey, err)
 		return InitSnowflake(0)
 	}
 	return InitSnowflake(mid)
@@ -179,6 +202,12 @@ func SnowflakeID() int64 {
 		// 重新 Load 都必非 nil。
 		if err := InitSnowflake(0); err != nil {
 			log.Debug("uidgen: snowflake auto-init raced, using winner's instance", logx.ErrKey, err)
+		} else {
+			// #236：auto-init 是隐式回落 0——多副本下重复主键的温床。
+			// 至少 Warn 一次（sync.Once 保证只报一次），不再静默 Debug。
+			snowflakeAutoInitWarn.Do(func() {
+				log.Warn("uidgen: SnowflakeID auto-initialized with machineID=0; call InitSnowflake/InitSnowflakeFromEnv at startup (multi-replica with machine 0 will collide)")
+			})
 		}
 		s = defaultSnowflake.Load()
 	}

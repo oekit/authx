@@ -40,14 +40,11 @@ func TestInitSnowflake_OutOfRange(t *testing.T) {
 }
 
 func TestInitSnowflakeFromEnv(t *testing.T) {
-	t.Run("empty falls back to 0", func(t *testing.T) {
+	t.Run("empty fails closed (#236)", func(t *testing.T) {
 		resetForTest()
 		t.Setenv("MACHINE_ID", "")
-		if err := InitSnowflakeFromEnv(); err != nil {
-			t.Fatalf("init: %v", err)
-		}
-		if got := SnowflakeMachineID(); got != 0 {
-			t.Errorf("expected machineID 0, got %d", got)
+		if err := InitSnowflakeFromEnv(); err == nil {
+			t.Fatal("MACHINE_ID 缺失必须 fail-closed（#236），不得静默回落 0")
 		}
 	})
 
@@ -62,14 +59,11 @@ func TestInitSnowflakeFromEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid value falls back to 0", func(t *testing.T) {
+	t.Run("invalid value fails closed (#236)", func(t *testing.T) {
 		resetForTest()
 		t.Setenv("MACHINE_ID", "not-a-number")
-		if err := InitSnowflakeFromEnv(); err != nil {
-			t.Fatalf("init: %v", err)
-		}
-		if got := SnowflakeMachineID(); got != 0 {
-			t.Errorf("expected fallback machineID 0, got %d", got)
+		if err := InitSnowflakeFromEnv(); err == nil {
+			t.Fatal("MACHINE_ID 非法必须 fail-closed（#236）")
 		}
 	})
 
@@ -78,6 +72,43 @@ func TestInitSnowflakeFromEnv(t *testing.T) {
 		t.Setenv("MACHINE_ID", "9999")
 		if err := InitSnowflakeFromEnv(); err == nil {
 			t.Error("expected error for out-of-range MACHINE_ID")
+		}
+	})
+}
+
+// TestInitSnowflakeFromEnvAllowZero 钉住显式降级变体（#236）：缺失/非法时
+// 才回落 0——dev 单进程 opt-in，生产误用有 Warn 可查。
+func TestInitSnowflakeFromEnvAllowZero(t *testing.T) {
+	t.Run("empty falls back to 0", func(t *testing.T) {
+		resetForTest()
+		t.Setenv("MACHINE_ID", "")
+		if err := InitSnowflakeFromEnvAllowZero(); err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		if got := SnowflakeMachineID(); got != 0 {
+			t.Errorf("expected machineID 0, got %d", got)
+		}
+	})
+
+	t.Run("invalid falls back to 0", func(t *testing.T) {
+		resetForTest()
+		t.Setenv("MACHINE_ID", "not-a-number")
+		if err := InitSnowflakeFromEnvAllowZero(); err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		if got := SnowflakeMachineID(); got != 0 {
+			t.Errorf("expected fallback machineID 0, got %d", got)
+		}
+	})
+
+	t.Run("valid value", func(t *testing.T) {
+		resetForTest()
+		t.Setenv("MACHINE_ID", "5")
+		if err := InitSnowflakeFromEnvAllowZero(); err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		if got := SnowflakeMachineID(); got != 5 {
+			t.Errorf("expected machineID 5, got %d", got)
 		}
 	})
 }
