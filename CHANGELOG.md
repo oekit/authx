@@ -1,3 +1,7 @@
+## [v0.14.0] — 2026-11-23
+
+- **破坏性变更**：仓与 module 改名 kitx → authx——module path 由 github.com/oekit/kitx 改为 github.com/oekit/authx（消除与 RPC 框架仓 kitex 的一字之差误查面）。消费方须把 import 前缀与 require 一并改到新路径并抬到 v0.14.0；旧路径 github.com/oekit/kitx 冻结在 v0.13.0（该版本 go.mod 声明旧路径，仍可解析但不再出新版本）。
+
 ## [v0.13.0] — 2026-11-21
 
 - 第三轮设计/缺陷审计（2026-11-21）kitx 修复：
