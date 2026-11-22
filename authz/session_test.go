@@ -337,7 +337,9 @@ func TestMemRegistryKickClaimRace(t *testing.T) {
 			defer wg.Done()
 			<-start // 屏障：两路同起点放行
 			kicked, err := reg.Kick(ctx, "s1")
-			if err != nil {
+			// 败方合法结局（#236）：(false, nil) 或 (false, ErrKickContended)
+			// ——拉黑已落地但重枪 ID 锁输给并发方，可重试；终态不变式不变。
+			if err != nil && !errors.Is(err, ErrKickContended) {
 				t.Errorf("Kick() error = %v", err)
 			}
 			results <- kicked
