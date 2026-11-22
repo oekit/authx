@@ -117,7 +117,9 @@ func TestRevokeUserVsKickRace(t *testing.T) {
 		<-start // 屏障
 		// 单会话下线与全会话强踢竞争同一会话（胜负不定，终态不变式在下面钉死；
 		// 计数口径的「不重不漏」断言见 authz 侧 TestMemRegistryKickUserVsKickRace）。
-		if _, err := reg.Kick(ctx, pairs[0].Session.ID); err != nil {
+		// 败方两种合法结局（#236）：(false, nil)=认领前就输 / (false,
+		// ErrKickContended)=拉黑已落地但重枪锁输（可重试），终态不变式都成立。
+		if _, err := reg.Kick(ctx, pairs[0].Session.ID); err != nil && !errors.Is(err, authz.ErrKickContended) {
 			t.Errorf("Kick() error = %v", err)
 		}
 	}()
