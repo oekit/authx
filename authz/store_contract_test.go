@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oekit/kitx/authz"
-	"github.com/oekit/kitx/authz/authztest"
+	"github.com/oekit/authx/authz"
+	"github.com/oekit/authx/authz/authztest"
 )
 
 // kitx 自身的 MemSessionStore 必须通过对外发布的契约套件——下游照此运行

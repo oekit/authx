@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oekit/kitx/authz"
+	"github.com/oekit/authx/authz"
 )
 
 // gateRegistry 会话注册表屏障替身：GetByRefreshHash 命中即「到场签到」并阻塞，

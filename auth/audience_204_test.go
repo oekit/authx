@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/oekit/kitx/jwt"
+	"github.com/oekit/authx/jwt"
 )
 
 // #204 回归：User.Audience 签发为标准 aud 声明（OAuth 场景 = client_id），

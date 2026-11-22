@@ -1,4 +1,4 @@
-// Package kitx 是 oekit 的标识与校验工具仓。
+// Package authx（原 kitx） 是 oekit 的标识与校验工具仓。
 //
 // 自 oekit/pkg v0.10.0 拆分而来，包含以下子包：
 //

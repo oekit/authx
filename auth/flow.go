@@ -7,9 +7,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/oekit/kitx/authz"
-	"github.com/oekit/kitx/jwt"
-	"github.com/oekit/kitx/uidgen"
+	"github.com/oekit/authx/authz"
+	"github.com/oekit/authx/jwt"
+	"github.com/oekit/authx/uidgen"
 	"github.com/oekit/logx"
 	bizerrors "github.com/oekit/pkg/errors"
 )

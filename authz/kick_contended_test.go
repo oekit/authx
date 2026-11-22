@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oekit/kitx/authz"
+	"github.com/oekit/authx/authz"
 )
 
 // secondLockFailStore 包装 SessionStore：对 ID 锁键的第二次 SetNX 返回
