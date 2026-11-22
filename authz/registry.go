@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oekit/kitx/uidgen"
+	"github.com/oekit/authx/uidgen"
 	"github.com/oekit/logx"
 	"github.com/oekit/pkg/contextx"
 	bizerrors "github.com/oekit/pkg/errors"

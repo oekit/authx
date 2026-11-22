@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oekit/kitx/pwd"
+	"github.com/oekit/authx/pwd"
 	"github.com/oekit/pkg/contextx"
 	"github.com/oekit/pkg/encoding"
 	bizerrors "github.com/oekit/pkg/errors"

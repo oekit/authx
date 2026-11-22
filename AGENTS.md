@@ -1,7 +1,7 @@
-# AGENTS.md — oekit/kitx
+# AGENTS.md — oekit/authx（原 kitx）
 
 > 标识与校验——uidgen（Snowflake 全局单例+Extract 元数据、手写 RFC 4122 v4 UUID 零第三方依赖、RandomHex/RandomString 拒绝采样随机串）+ validator（go-playground/validator v10 接口化门面：struct tag 校验/自定义规则注册/ValidationError Unwrap 为 BizError 400 对接 middleware.Fail）+ hash（v0.2.0 起非密码学哈希助手 Md5Hex/Md5Bytes——缓存键/幂等键/短唯一 code，格式稳定承诺，pkg 2026-09-15 治理移除弱哈希后 kitx 侧收编 pkg#10），自 pkg v0.10.0 拆出
-> 当前版本：`v0.13.0` · module：`github.com/oekit/kitx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.13.0` · module：`github.com/oekit/authx`（2026-11-23 自 kitx 改名，消除与 RPC 框架仓 kitex 的一字之差误查面） · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `./`、`hash/`、`uidgen/`、`validator/`、`jwt/`、`authz/`、`auth/`、`pwd/`
@@ -11,7 +11,7 @@
 ### 分层与依赖
 - 依赖严格自底向上，禁止反向依赖；本仓的矩阵内依赖见 README「矩阵总览」表
 - 微工具集统一在 `github.com/oekit/pkg`；本仓新增基础工具前先确认 pkg 里没有
-- `pkg` 是**零第三方依赖仓**（go.mod 零 require，仅标准库，CI 强制）——需要三方能力的基础工具拆独立仓（先例：kitx）
+- `pkg` 是**零第三方依赖仓**（go.mod 零 require，仅标准库，CI 强制）——需要三方能力的基础工具拆独立仓（先例：authx，原 kitx）
 
 ### 错误处理
 - 业务错误（需 BizCode/HTTPCode 双轨、可被 As/Is 判定）统一用

@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/oekit/kitx/uidgen"
+	"github.com/oekit/authx/uidgen"
 	bizerrors "github.com/oekit/pkg/errors"
 )
 

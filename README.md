@@ -1,4 +1,4 @@
-# kitx
+# authx（原 kitx，2026-11-23 改名）
 
 > 标识与校验——Snowflake / ULID / UUID / 随机串 + 非密码学哈希助手 + go-playground/validator 门面 + JWT（RS256 非对称 / HS256 对称共享密钥）+ 认证原语三件套（authz 状态面 / auth 认证流编排 / pwd 密码策略）
 
@@ -8,12 +8,12 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/kitx@v0.13.0
+go get github.com/oekit/authx@latest
 ```
 
 ## 这个仓库做什么
 
-`kitx` 是 **标识与校验** 工具仓（自 `oekit/pkg` v0.10.0 拆出，pkg 本体自此零第三方依赖）：
+`authx` 是 **标识与校验** 工具仓（自 `oekit/pkg` v0.10.0 拆出，pkg 本体自此零第三方依赖）：
 
 - `hash` —— 非密码学哈希助手：`Md5Hex`/`Md5Bytes`（缓存键/幂等键/短唯一 code；格式稳定承诺，禁用凭据/签名，pkg#10 收编）
 - `uidgen` —— 分布式唯一 ID 与随机串：Snowflake（全局单例 + Extract 元数据提取）、
@@ -140,3 +140,13 @@ if err := validator.Validate(&req); err != nil {
 | [kitex](https://github.com/oekit/kitex) | Kitex 生态——日志桥接、治理热更、生命周期、BizError 桥接、kitexotel、istio（xDS 动态熔断，原 istio 微库收编）；RunServer 变参就绪门（WithOnReady/WithReadyAddr/WithReadyProbeTimeout）+ chainmw.ToKitex（core/chain.Middleware → kitex 中间件，与 hertz 共享 middleware/chainmw 实现）+ transportx | [bootstrap](https://github.com/oekit/bootstrap)、[concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[nns](https://github.com/oekit/nns)、[pkg](https://github.com/oekit/pkg)、[registry](https://github.com/oekit/registry)、[tracing](https://github.com/oekit/tracing) |
 | [workflow](https://github.com/oekit/workflow) | 组合式流程编排——串行/并行/异步/条件分支 + Hook AOP | [concurrency](https://github.com/oekit/concurrency)、[logx](https://github.com/oekit/logx)、[pkg](https://github.com/oekit/pkg) |
 | [kitex-examples](https://github.com/oekit/kitex-examples) | Kitex echo 示例——client/server + IDL + 治理配置 | [bootstrap](https://github.com/oekit/bootstrap)、[core](https://github.com/oekit/core)、[kitex](https://github.com/oekit/kitex)、[logx](https://github.com/oekit/logx)、[tracing](https://github.com/oekit/tracing) |
+
+
+## 改名说明（kitx → authx，2026-11-23）
+
+本仓自 kitx 改名 **authx**：内容（uidgen/validator/hash/jwt/authz/auth/pwd）
+与 RPC 框架封装仓 `oekit/kitex` 一字之差，org 内文档与 AI 检索反复发生误查
+（审计确认的结构性命名风险）；且「kitx」名字本身不表意——内容 90% 是认证/
+授权/jwt/pwd/authz。module 路径同步改为 `github.com/oekit/authx`，GitHub 旧
+路径 `oekit/kitx` 重定向到新仓；消费方只需改 import 前缀（org 内仅 hertz
+validatorh 一处，跨 org 零消费）。

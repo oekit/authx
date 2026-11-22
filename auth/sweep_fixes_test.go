@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oekit/kitx/jwt"
+	"github.com/oekit/authx/jwt"
 	bizerrors "github.com/oekit/pkg/errors"
 )
 

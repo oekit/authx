@@ -1,4 +1,4 @@
-module github.com/oekit/kitx
+module github.com/oekit/authx
 
 go 1.26.0
 

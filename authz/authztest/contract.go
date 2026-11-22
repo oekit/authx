@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oekit/kitx/authz"
+	"github.com/oekit/authx/authz"
 	bizerrors "github.com/oekit/pkg/errors"
 )
 
